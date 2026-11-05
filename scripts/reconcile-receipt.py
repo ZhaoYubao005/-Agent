@@ -1,5 +1,6 @@
 """Reconcile a stranded receipt after stopping all Agent writers and checking Medusa."""
 import argparse
+import json
 
 from ecomops.audit import record
 from ecomops.auth import Actor
@@ -10,6 +11,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('proposal_id')
     parser.add_argument('--actor', required=True, help='Named maintenance operator')
+    parser.add_argument('--outcome', required=True, choices=['received', 'not_received', 'unknown'])
     parser.add_argument('--note', required=True, help='Outcome of physical and Medusa verification')
     parser.add_argument('--verified-offline', action='store_true', required=True,
                         help='Confirm all Agent processes are stopped and Medusa outcome was checked')
@@ -25,7 +27,11 @@ def main():
         """, (args.proposal_id,)).rowcount
         if not changed:
             parser.error('Proposal is missing or not in the applying state')
-        record(db, Actor(actor, 'maintenance'), 'reconciled', args.proposal_id, note)
+        db.execute(
+            "UPDATE receipt_batches SET status='reconciled', receipt=? WHERE proposal_id=? AND status='applying'",
+            (json.dumps({'outcome': args.outcome}), args.proposal_id),
+        )
+        record(db, Actor(actor, 'maintenance'), 'reconciled', args.proposal_id, f'Outcome {args.outcome}: {note}')
     print('Reconciliation recorded.')
 
 

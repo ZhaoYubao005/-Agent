@@ -47,6 +47,8 @@ def test_alert_refresh_preserves_operator_status_and_audit(tmp_path, monkeypatch
         change_alert(db, alert['id'], 'acknowledged')
     with operations_db(connect) as db:
         refreshed = refresh_alerts(db, [{**alert, 'age_hours': 48}])
+        assert len(refreshed) == 1
+        assert refreshed[0].pop('last_seen_at')
         assert refreshed == [{**alert, 'age_hours': 48, 'status': 'acknowledged'}]
         assert db.execute('SELECT count(*) FROM order_alert_events').fetchone()[0] == 1
 

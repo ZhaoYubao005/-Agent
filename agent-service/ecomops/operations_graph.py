@@ -41,18 +41,19 @@ async def analyze(state):
     previous = daily_metrics(orders, day - timedelta(days=1), zone)
     availability = [amount(level.get('available_quantity')) for item in inventory
                     for level in item.get('location_levels') or []]
+    snapshot = {
+        'as_of': state['now'].isoformat(),
+        'fulfillment_sla_alerts': len(overdue),
+        'inventory_shortage_alerts': len(shortages),
+        'orders_with_unknown_shortage_status': len(assessment['unknown_orders']),
+        'inventory_levels_out_of_stock': sum(value is not None and value <= 0 for value in availability),
+        'inventory_levels_with_unknown_availability': availability.count(None),
+    }
     return {'result': {
         'current': current,
         'previous': previous,
-        'snapshot': {
-            'as_of': state['now'].isoformat(),
-            'fulfillment_sla_alerts': len(overdue),
-            'inventory_shortage_alerts': len(shortages),
-            'orders_with_unknown_shortage_status': len(assessment['unknown_orders']),
-            'inventory_levels_out_of_stock': sum(value is not None and value <= 0 for value in availability),
-            'inventory_levels_with_unknown_availability': availability.count(None),
-        },
-        'advice': await interpret_report(current, previous),
+        'snapshot': snapshot,
+        'advice': await interpret_report(current, previous, snapshot),
     }}
 
 

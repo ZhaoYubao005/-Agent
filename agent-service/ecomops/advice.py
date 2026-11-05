@@ -13,12 +13,16 @@ class Advice(BaseModel):
     actions: list[Annotated[str, Field(min_length=1, max_length=300)]] = Field(max_length=4)
 
 
-async def interpret_report(current, previous):
+async def interpret_report(current, previous, snapshot=None):
     facts = {
         'current_orders': current['orders'],
         'previous_orders': previous['orders'],
         'revenue_available': current['revenue'] is not None,
     }
+    if snapshot is not None:
+        facts.update({key: snapshot[key] for key in (
+            'fulfillment_sla_alerts', 'inventory_shortage_alerts', 'inventory_levels_out_of_stock',
+        )})
     fallback = {
         'source': 'rules',
         'summary': f"Orders: {facts['current_orders']} versus {facts['previous_orders']} in the prior period.",

@@ -46,11 +46,17 @@ def _fixture_level(response: dict, item_id: str, location_id: str) -> tuple[str,
     return sku, level
 
 
+def validate_receipt_environment():
+    if os.environ.get('ECOMOPS_ALLOW_REPLENISHMENT') != '1' or os.environ.get('ECOMOPS_ISOLATED_FIXTURES') != '1':
+        raise ValueError('Stock writes are disabled')
+    if not _fixture_endpoint(Medusa().url):
+        raise ValueError('Stock receipts require a local fixture Medusa endpoint')
+
+
 async def replenish_inventory(inventory_item_id: str, location_id: str,
                               quantity: int, expected_stocked: int, expected_reserved: int) -> dict:
     """Receive approved demo stock in an environment with exclusive fixture writes."""
-    if os.environ.get('ECOMOPS_ALLOW_REPLENISHMENT') != '1' or os.environ.get('ECOMOPS_ISOLATED_FIXTURES') != '1':
-        raise ValueError('Stock writes are disabled')
+    validate_receipt_environment()
     if not all(isinstance(value, str) and _IDENTIFIER.fullmatch(value)
                for value in (inventory_item_id, location_id)):
         raise ValueError('Invalid Medusa item or location identifier')
@@ -63,8 +69,6 @@ async def replenish_inventory(inventory_item_id: str, location_id: str,
         raise ValueError('Receipt exceeds the safe integer range')
 
     medusa = Medusa()
-    if not _fixture_endpoint(medusa.url):
-        raise ValueError('Stock receipts require a local fixture Medusa endpoint')
     item_path = f'/admin/inventory-items/{inventory_item_id}'
     before = await medusa.request('GET', item_path)
     sku, level = _fixture_level(before, inventory_item_id, location_id)

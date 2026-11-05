@@ -1,4 +1,5 @@
 """Authenticated Medusa API adapter. Credentials never enter tool results."""
+import asyncio
 from collections import defaultdict
 import os
 import httpx
@@ -27,6 +28,17 @@ class Medusa:
         self.url = os.environ.get('MEDUSA_URL', 'http://127.0.0.1:9000')
 
     async def request(self, method, path, **kwargs):
+        attempts = 2 if method.upper() in {'GET', 'HEAD'} else 1
+        for attempt in range(attempts):
+            try:
+                return await self._request_once(method, path, **kwargs)
+            except (httpx.TransportError, httpx.HTTPStatusError) as error:
+                transient = isinstance(error, httpx.TransportError) or error.response.status_code in {502, 503, 504}
+                if not transient or attempt + 1 == attempts:
+                    raise
+                await asyncio.sleep(0.2)
+
+    async def _request_once(self, method, path, **kwargs):
         async with httpx.AsyncClient(base_url=self.url, timeout=30, trust_env=False) as client:
             auth = await client.post('/auth/user/emailpass', json={
                 'email': os.environ['MEDUSA_ADMIN_EMAIL'],

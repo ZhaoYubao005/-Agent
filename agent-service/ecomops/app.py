@@ -22,13 +22,13 @@ from ecomops.inventory_history import save_levels
 from ecomops.tools import MCPUnavailable, call, commerce_tools
 from ecomops.operations_graph import operations_graph
 from ecomops import operations_store
-from ecomops.receipts import replenish_inventory
-from ecomops.scheduler import run_schedule
+from ecomops.receipts import replenish_inventory, validate_receipt_environment
+from ecomops.scheduler import execute_report_job, run_schedule
 from ecomops.workflow import run_graph
 
 @asynccontextmanager
 async def lifespan(app):
-    task = asyncio.create_task(run_schedule(connect, generate_report))
+    task = asyncio.create_task(run_schedule(connect, _generate_report))
     try:
         yield
     finally:
@@ -75,6 +75,12 @@ class Policy(BaseModel):
 
 @app.get('/health')
 def health():
+    try:
+        with transaction() as db:
+            db.execute('SELECT 1')
+    except Exception as error:
+        logger.warning('operations database unavailable: %s', type(error).__name__)
+        raise HTTPException(503, 'Operations database unavailable') from None
     return {'status': 'ok'}
 
 
@@ -128,11 +134,18 @@ async def receive(proposal_id: str, confirmation: ReceiptConfirmation | None = N
         if batch:
             if confirmation and confirmation.quantity != batch['quantity']:
                 raise HTTPException(409, 'Receipt request ID was already used for a different quantity')
+            if batch['status'] not in {'applied', 'partially_received'}:
+                raise HTTPException(409, {'message': 'Receipt requires status verification',
+                                          'status': batch['status'], 'request_id': request_id})
             return {**current, 'status': batch['status'], 'receipt': json.loads(batch['receipt'])}
         if current['status'] == 'applied' and not confirmation:
             return current
         if current['status'] not in {'approved', 'partially_received'}:
             raise HTTPException(409, 'Proposal state does not allow receipt')
+        try:
+            validate_receipt_environment()
+        except ValueError as error:
+            raise HTTPException(403, str(error)) from None
         proposal = current['proposal']
         previous_receipt = current['receipt']
         received = previous_receipt['received_quantity'] if previous_receipt else 0
@@ -147,7 +160,9 @@ async def receive(proposal_id: str, confirmation: ReceiptConfirmation | None = N
                 current['status'], json.dumps(previous_receipt) if previous_receipt else None,
             )
             if claimed:
-                record(db, actor, 'applying', proposal_id, f'Quantity: {quantity}')
+                db.execute('INSERT INTO receipt_batches VALUES (?, ?, ?, ?, ?)',
+                           (proposal_id, request_id, quantity, 'applying', '{}'))
+                record(db, actor, 'applying', proposal_id, f'Batch {request_id}; quantity {quantity}')
         if not claimed:
             raise HTTPException(409, 'Receipt already claimed or this stock location requires reconciliation')
         try:
@@ -161,7 +176,9 @@ async def receive(proposal_id: str, confirmation: ReceiptConfirmation | None = N
         except Exception:
             with transaction() as db:
                 db.execute('UPDATE proposals SET status=? WHERE id=?', ('needs_review', proposal_id))
-                record(db, actor, 'needs_review', proposal_id)
+                db.execute('UPDATE receipt_batches SET status=? WHERE proposal_id=? AND request_id=?',
+                           ('needs_review', proposal_id, request_id))
+                record(db, actor, 'needs_review', proposal_id, f'Batch {request_id}')
             raise HTTPException(409, 'Stock application failed or is uncertain; reconcile with Medusa')
         receipt.update(batch_quantity=quantity, received_quantity=received + quantity,
                        remaining_quantity=remaining - quantity)
@@ -170,13 +187,13 @@ async def receive(proposal_id: str, confirmation: ReceiptConfirmation | None = N
         with transaction() as db:
             db.execute('UPDATE proposals SET status=?, receipt=? WHERE id=?',
                        (target, payload, proposal_id))
-            db.execute('INSERT INTO receipt_batches VALUES (?, ?, ?, ?, ?)',
-                       (proposal_id, request_id, quantity, target, payload))
+            db.execute('UPDATE receipt_batches SET status=?, receipt=? WHERE proposal_id=? AND request_id=?',
+                       (target, payload, proposal_id, request_id))
             record(db, actor, target, proposal_id, f'Quantity: {quantity}')
         return {**current, 'status': target, 'receipt': receipt}
 
 
-def transition(proposal_id: str, allowed: tuple[str, ...], target: str, actor: Actor, note=None):
+def transition(proposal_id: str, allowed: tuple[str, ...], target: str, actor: Actor, note=None, outcome=None):
     with transaction() as db:
         placeholders = ','.join('?' for _ in allowed)
         changed = db.execute(
@@ -184,7 +201,14 @@ def transition(proposal_id: str, allowed: tuple[str, ...], target: str, actor: A
             (target, proposal_id, *allowed),
         ).rowcount
         if changed:
-            record(db, actor, target, proposal_id, note)
+            if target == 'reconciled':
+                db.execute(
+                    "UPDATE receipt_batches SET status='reconciled', receipt=? "
+                    "WHERE proposal_id=? AND status='needs_review'",
+                    (json.dumps({'outcome': outcome}), proposal_id),
+                )
+            audit_note = f'Outcome {outcome}: {note}' if outcome is not None else note
+            record(db, actor, target, proposal_id, audit_note)
     current = retrieve(proposal_id)
     if current['status'] != target:
         raise HTTPException(409, 'Proposal state does not allow this action')
@@ -266,10 +290,15 @@ async def generate_report(day: date, zone: str = Query(default='UTC', max_length
         raise HTTPException(422, 'Unknown IANA time zone')
     if day >= datetime.now(report_zone).date():
         raise HTTPException(422, 'Only a completed business day can be saved. Use the report preview for today.')
-    with operations_store.operations_db(connect) as db:
-        existing = operations_store.get_report(db, day.isoformat(), zone)
-    if existing:
-        return existing
+    if not date(1970, 1, 2) <= day <= date(9999, 12, 30):
+        raise HTTPException(422, 'Report date out of range')
+    result = await execute_report_job(connect, _generate_report, day, zone)
+    if result is None:
+        raise HTTPException(409, 'Report generation is running or waiting to retry')
+    return result
+
+
+async def _generate_report(day: date, zone: str):
     result = await daily_report(day, zone)
     with operations_store.operations_db(connect) as db:
         return operations_store.save_report(db, day.isoformat(), zone, result)
@@ -322,12 +351,13 @@ def export_report(day: date, zone: str = Query(default='UTC', max_length=64)):
 
 
 class Reconciliation(BaseModel):
+    outcome: Literal['received', 'not_received', 'unknown'] = 'unknown'
     note: str = Field(min_length=8, max_length=500, pattern=r'\S')
 
 
 @app.post('/recommendations/{proposal_id}/reconcile')
 def reconcile(proposal_id: str, details: Reconciliation, actor: Actor = Depends(administrator)):
-    return transition(proposal_id, ('needs_review',), 'reconciled', actor, details.note)
+    return transition(proposal_id, ('needs_review',), 'reconciled', actor, details.note, details.outcome)
 
 
 @app.get('/operations/audit', dependencies=[Depends(administrator)])
@@ -374,3 +404,28 @@ def inventory_history(sku: str = Query(min_length=1, max_length=200),
 @app.get('/identity')
 def identity(actor: Actor = Depends(authorize)):
     return {'account': actor.name, 'role': actor.role}
+
+
+@app.get('/operations/orders/alerts/{alert_id}/history', dependencies=[Depends(authorize)])
+def alert_history(alert_id: str):
+    with transaction() as db:
+        if not db.execute('SELECT 1 FROM order_alerts WHERE id=?', (alert_id,)).fetchone():
+            raise HTTPException(404, 'Alert not found')
+        return [dict(row) for row in db.execute(
+            'SELECT status, occurred_at FROM order_alert_events WHERE alert_id=? ORDER BY sequence',
+            (alert_id,),
+        )]
+
+
+@app.get('/recommendations/{proposal_id}/batches', dependencies=[Depends(authorize)])
+def receipt_batches(proposal_id: str):
+    retrieve(proposal_id)
+    with transaction() as db:
+        return [
+            {'request_id': row['request_id'], 'quantity': row['quantity'], 'status': row['status'],
+             'receipt': json.loads(row['receipt']) or None}
+            for row in db.execute(
+                'SELECT request_id, quantity, status, receipt FROM receipt_batches WHERE proposal_id=? ORDER BY request_id',
+                (proposal_id,),
+            )
+        ]

@@ -20,11 +20,12 @@ def list_alerts(db):
 
 
 def refresh_alerts(db, alerts):
+    observed_at = datetime.now(timezone.utc).isoformat()
     for alert in alerts:
         db.execute("""
             INSERT INTO order_alerts VALUES (?, ?, 'open')
             ON CONFLICT(id) DO UPDATE SET payload=excluded.payload
-        """, (alert['id'], json.dumps(alert)))
+        """, (alert['id'], json.dumps({**alert, 'last_seen_at': observed_at})))
     return list_alerts(db)
 
 

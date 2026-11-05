@@ -40,6 +40,9 @@ jobs:
           .venv/bin/playwright install --with-deps chromium
           python3 scripts/run-with-env.py .venv/bin/python scripts/browser-check.py
           cp docs/evidence/browser.json docs/evidence/admin-*.png ci-evidence/
+      - name: Verify operations console in Chromium
+        run: python3 scripts/run-with-env.py .venv/bin/python scripts/console-check.py | tee ci-evidence/console.json
+        shell: bash
       - name: Upload current-run evidence
         if: always()
         uses: actions/upload-artifact@v4

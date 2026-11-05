@@ -1,5 +1,7 @@
 """Local authenticated API with durable proposals and receipt audit records."""
 import asyncio
+import csv
+import io
 import json
 import os
 import sqlite3
@@ -8,7 +10,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, model_validator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ecomops.auth import administrator, authorize, operator
@@ -235,4 +237,20 @@ def console():
     return FileResponse(Path(__file__).with_name('console.html'), headers={
         'Cache-Control': 'no-store',
         'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+    })
+
+
+@app.get('/operations/reports/history/{day}/export', dependencies=[Depends(authorize)])
+def export_report(day: date, zone: str = Query(default='UTC', max_length=64)):
+    report = historical_report(day, zone)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['period', 'metric', 'value'])
+    for period in ('current', 'previous'):
+        snapshot = report[period]
+        for metric in ('period_start', 'period_end', 'orders', 'orders_missing_items',
+                       'revenue_unavailable_reason'):
+            writer.writerow([period, metric, snapshot[metric]])
+    return Response(output.getvalue(), media_type='text/csv', headers={
+        'Content-Disposition': f'attachment; filename="ecomops-{day.isoformat()}.csv"',
     })

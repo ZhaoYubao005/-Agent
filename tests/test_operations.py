@@ -1,6 +1,8 @@
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from ecomops.operations import daily_metrics, sla_alerts
 
 
@@ -58,3 +60,13 @@ def test_report_generation_is_idempotent(tmp_path, monkeypatch):
         first = save_report(db, '2026-11-05', 'UTC', {'current': {'orders': 2}})
         second = save_report(db, '2026-11-05', 'UTC', {'current': {'orders': 5}})
         assert first == second
+
+
+@pytest.mark.asyncio
+async def test_report_advice_uses_rules_without_provider(monkeypatch):
+    from ecomops.advice import interpret_report
+
+    monkeypatch.delenv('ECOMOPS_LLM_URL', raising=False)
+    advice = await interpret_report({'orders': 2, 'revenue': None}, {'orders': 1})
+    assert advice['source'] == 'rules'
+    assert advice['trace'] == 'provider_disabled'

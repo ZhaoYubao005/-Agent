@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 from langgraph.graph import END, START, StateGraph
 
+from ecomops.advice import interpret_report
 from ecomops.operations import daily_metrics, sla_alerts
 from ecomops.tools import call, commerce_tools
 
@@ -23,7 +24,7 @@ async def read_orders(state):
         return {'orders': await call(session, 'list_orders')}
 
 
-def analyze(state):
+async def analyze(state):
     orders = state['orders']
     result = {'alerts': sla_alerts(orders, state['now'], state['sla_hours'])}
     if 'day' in state:
@@ -31,6 +32,7 @@ def analyze(state):
         zone = ZoneInfo(state['zone'])
         result['current'] = daily_metrics(orders, day, zone)
         result['previous'] = daily_metrics(orders, day - timedelta(days=1), zone)
+        result['advice'] = await interpret_report(result['current'], result['previous'])
     return {'result': result}
 
 

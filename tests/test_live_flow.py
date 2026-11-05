@@ -8,11 +8,13 @@ from uuid import uuid4
 import httpx
 import pytest
 from ecomops.medusa import Medusa
+from ecomops.receipts import validate_receipt_environment
 from ecomops.tools import commerce_tools, call
 
 
 @pytest.mark.asyncio
 async def test_real_api_mcp_langgraph_replenishment():
+    validate_receipt_environment()
     medusa = Medusa()
     products = await medusa.list_all('products', 'products')
     orders = await medusa.list_all('orders', 'orders')

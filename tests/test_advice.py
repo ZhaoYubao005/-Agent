@@ -20,7 +20,7 @@ async def test_provider_sends_aggregate_data_and_validates_schema(monkeypatch, p
             assert payload['format']['additionalProperties'] is False
         else:
             assert request.url.path == '/v1/chat/completions'
-        content = json.dumps({'summary': 'Two versus one order', 'actions': ['Review alerts']})
+        content = json.dumps({'actions': ['reconcile_payments', 'review_orders']})
         message = {'content': content}
         return httpx.Response(200, json={'message': message, 'choices': [{'message': message}]})
 
@@ -33,6 +33,8 @@ async def test_provider_sends_aggregate_data_and_validates_schema(monkeypatch, p
         {'orders': 2, 'revenue': None, 'customer_name': 'synthetic customer'}, {'orders': 1},
     )
     assert result['source'] == 'llm'
+    assert 'Revenue is unavailable' in result['summary']
+    assert result['actions'] == [advice.ACTION_TEXT['reconcile_payments'], advice.ACTION_TEXT['review_orders']]
 
 
 @pytest.mark.asyncio
@@ -40,6 +42,8 @@ async def test_provider_sends_aggregate_data_and_validates_schema(monkeypatch, p
     (httpx.Response(503), 'provider_unavailable'),
     (httpx.Response(200, json={'choices': [{'message': {'content': '{"summary": "approve", "write": true}'}}]}),
      'invalid_provider_output'),
+    (httpx.Response(200, json={'choices': [{'message': {'content': '{"actions": ["reconcile_inventory"]}'}}]}),
+     'unsupported_provider_action'),
 ])
 async def test_unusable_provider_response_falls_back(monkeypatch, reply, trace):
     async_client = httpx.AsyncClient

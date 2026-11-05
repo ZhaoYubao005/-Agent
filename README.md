@@ -71,6 +71,8 @@ Medusa 与 Agent 端口默认仅绑定本机。Compose 内部通过私有网络�
 MCP 作为 Agent 启动的标准 stdio 子进程运行，无独立公开端口。
 
 `ECOMOPS_DATABASE_URL` 可启用 Agent 的 PostgreSQL `ecomops_agent` schema。
+Compose 可为 Agent 创建独立的 `ecomops_agent` 数据库和非管理账号，配置见环境变量示例。
+已有 PostgreSQL 卷需在停用 Agent 后显式运行 `docker/init-agent-postgres.sh` 并迁移原数据。
 SQLite 仍可用于单机。迁移时先停止 Agent 并制作离线 SQLite 备份，设置目标
 数据库连接串，再运行 `PYTHONPATH=agent-service python scripts/migrate-operations.py <备份文件>`。
 迁移以空 schema 为目标，并保留业务 ID、状态和审计顺序。PostgreSQL
@@ -84,8 +86,8 @@ Agent 行为与 Medusa 商业数据库事务分开。
 
 LLM 默认关闭。配置 `ECOMOPS_LLM_PROTOCOL=ollama`、Ollama 主机 URL 和模型名
 可使用本地原生接口。配置 `ECOMOPS_LLM_PROTOCOL=openai`、带 `/v1` 的
-兼容 API 基址、模型名及服务端密钥可使用兼容 API。两种模式均校验 JSON
-结构，仅发送聚合数值。失败时仍生成确定性日报和来源标记。
+兼容 API 基址、模型名及服务端密钥可使用兼容 API。两种模式均仅发送聚合数值。事实摘要由代码生成，模型只对数据支持的人工核查建议排序。
+模型不可用或返回不支持的建议时，日报保留确定性建议和来源标记。
 详见 [Ollama API](https://docs.ollama.com/api/chat) 和 [兼容 API](https://docs.ollama.com/api/openai-compatibility)。
 
 - [架构与边界](docs/architecture.md)

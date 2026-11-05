@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EcomOps 运营控制台</title>
+<style>
+body { font: 16px system-ui; max-width: 72rem; margin: 2rem auto; padding: 0 1rem; color: #18243a; }
+section { border: 1px solid #cdd5e3; padding: 1rem; margin: 1rem 0; border-radius: .6rem; }
+button, input { font: inherit; padding: .4rem; margin: .25rem; }
+pre { overflow: auto; background: #eef2f7; padding: 1rem; }
+</style>
+<h1>EcomOps 运营控制台</h1>
+<label>服务令牌 <input id="token" type="password" autocomplete="off"></label>
+<p id="status" role="status"></p>
+<section>
+<h2>库存与收货</h2>
+<button id="inventory">检查库存</button>
+<label>提案 ID <input id="proposal"></label>
+<button id="approval">批准</button><button id="receipt">确认收到商品</button>
+<button id="rejection">拒绝</button><button id="cancellation">取消</button>
+</section>
+<section>
+<h2>异常订单</h2>
+<button id="refresh">扫描并保存异常</button><button id="alerts">查看告警</button>
+<label>告警 ID <input id="alert"></label>
+<button id="acknowledge">确认告警</button><button id="close-alert">关闭告警</button>
+</section>
+<section>
+<h2>运营日报</h2>
+<label>日期 <input id="day" type="date"></label>
+<label>时区 <input id="zone" value="Asia/Shanghai"></label>
+<button id="report">生成日报</button><button id="history">历史日报</button>
+</section>
+<pre id="result" aria-label="操作结果"></pre>
+<script>
+const byId = id => document.getElementById(id);
+const value = id => byId(id).value.trim();
+const query = () => new URLSearchParams({day: value('day'), zone: value('zone')});
+async function request(path, method = 'GET', body) {
+  byId('status').textContent = '执行中…';
+  try {
+    const response = await fetch(path, {
+      method,
+      headers: {'Authorization': 'Bearer ' + value('token'), 'Content-Type': 'application/json'},
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const result = await response.json();
+    byId('result').textContent = JSON.stringify(result, null, 2);
+    byId('status').textContent = response.ok ? '完成' : '请求失败 (' + response.status + ')';
+  } catch {
+    byId('status').textContent = '请求失败，请检查服务连接';
+  }
+}
+const proposal = action => request('/recommendations/' + encodeURIComponent(value('proposal')) + '/' + action, 'POST');
+const alertAction = status => request('/operations/orders/alerts/' + encodeURIComponent(value('alert')) + '/status', 'POST', {status});
+byId('inventory').onclick = () => request('/inventory/check', 'POST', {});
+byId('approval').onclick = () => proposal('approve');
+byId('receipt').onclick = () => { if (confirm('确认商品已实际收到？')) proposal('receive'); };
+byId('rejection').onclick = () => proposal('reject');
+byId('cancellation').onclick = () => proposal('cancel');
+byId('refresh').onclick = () => request('/operations/orders/alerts/refresh', 'POST');
+byId('alerts').onclick = () => request('/operations/orders/alerts/saved');
+byId('acknowledge').onclick = () => alertAction('acknowledged');
+byId('close-alert').onclick = () => alertAction('closed');
+byId('report').onclick = () => request('/operations/reports/daily?' + query(), 'POST');
+byId('history').onclick = () => request('/operations/reports/history');
+</script>
+</html>

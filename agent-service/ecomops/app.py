@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, model_validator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -235,3 +236,11 @@ def historical_report(day: date, zone: str = Query(default='UTC', max_length=64)
     if result is None:
         raise HTTPException(404, 'Report not found')
     return result
+
+
+@app.get('/console', include_in_schema=False)
+def console():
+    return FileResponse(Path(__file__).with_name('console.html'), headers={
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+    })

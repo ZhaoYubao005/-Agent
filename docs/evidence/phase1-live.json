@@ -1,0 +1,231 @@
+{
+  "executed_at": "2026-11-05T09:27:03.924682+00:00",
+  "medusa_version": "2.22.3",
+  "http": {
+    "medusa_health": 200,
+    "admin": 200
+  },
+  "demo_product_ids": [
+    "prod_01M6NFVTR7HJDP8BJ2WSP1N58Q",
+    "prod_01M6NFVTXGFKFNM4K2SHTX4V3F",
+    "prod_01M6NFVV1XEJJ96AHQ52P1JYWH"
+  ],
+  "demo_orders": [
+    {
+      "id": "order_01M6NFVVBB5V52D5CKCM1PC79H",
+      "status": "pending"
+    },
+    {
+      "id": "order_01M6NFVVGKES69807GQ8PY7Z98",
+      "status": "pending"
+    }
+  ],
+  "mcp_tools": [
+    "list_products",
+    "list_orders",
+    "list_inventory",
+    "replenish_inventory"
+  ],
+  "before": {
+    "run_id": "4bf2848f-8ac8-4168-9263-0bd31a016e3b",
+    "checked_at": "2026-11-05T09:26:58.555536+00:00",
+    "policy": {
+      "threshold": 10,
+      "target": 30
+    },
+    "counts": {
+      "products": 7,
+      "orders": 2,
+      "inventory": 23
+    },
+    "recommendations": [
+      {
+        "id": "44140e65-e3a3-4b71-9975-eddc4f226dc0",
+        "status": "proposed",
+        "inventory_item_id": "iitem_01M6NFVTV8EDFE9ZK3TMGVYEPN",
+        "sku": "ECOMOPS-MUG",
+        "location_id": "sloc_01M6NFSG74MPGDGY2AV7B8BJ6G",
+        "available_quantity": 3,
+        "expected_stocked": 5,
+        "reserved_quantity": 2,
+        "quantity": 27,
+        "reason": "Available 3 below threshold 10; restore available stock to 30"
+      },
+      {
+        "id": "a67d644a-b089-463a-bad8-45dc70e6e463",
+        "status": "proposed",
+        "inventory_item_id": "iitem_01M6NFVV5FAT8K1EPDZRYEH9JB",
+        "sku": "ECOMOPS-BOTTLE",
+        "location_id": "sloc_01M6NFSG74MPGDGY2AV7B8BJ6G",
+        "available_quantity": 0,
+        "expected_stocked": 0,
+        "reserved_quantity": 0,
+        "quantity": 30,
+        "reason": "Available 0 below threshold 10; restore available stock to 30"
+      }
+    ]
+  },
+  "receipts": [
+    {
+      "id": "44140e65-e3a3-4b71-9975-eddc4f226dc0",
+      "run_id": "4bf2848f-8ac8-4168-9263-0bd31a016e3b",
+      "status": "applied",
+      "proposal": {
+        "inventory_item_id": "iitem_01M6NFVTV8EDFE9ZK3TMGVYEPN",
+        "sku": "ECOMOPS-MUG",
+        "location_id": "sloc_01M6NFSG74MPGDGY2AV7B8BJ6G",
+        "available_quantity": 3,
+        "expected_stocked": 5,
+        "reserved_quantity": 2,
+        "quantity": 27,
+        "reason": "Available 3 below threshold 10; restore available stock to 30"
+      },
+      "receipt": {
+        "inventory_item_id": "iitem_01M6NFVTV8EDFE9ZK3TMGVYEPN",
+        "location_id": "sloc_01M6NFSG74MPGDGY2AV7B8BJ6G",
+        "before_stocked": 5,
+        "after_stocked": 32,
+        "available_quantity": 30
+      }
+    },
+    {
+      "id": "a67d644a-b089-463a-bad8-45dc70e6e463",
+      "run_id": "4bf2848f-8ac8-4168-9263-0bd31a016e3b",
+      "status": "applied",
+      "proposal": {
+        "inventory_item_id": "iitem_01M6NFVV5FAT8K1EPDZRYEH9JB",
+        "sku": "ECOMOPS-BOTTLE",
+        "location_id": "sloc_01M6NFSG74MPGDGY2AV7B8BJ6G",
+        "available_quantity": 0,
+        "expected_stocked": 0,
+        "reserved_quantity": 0,
+        "quantity": 30,
+        "reason": "Available 0 below threshold 10; restore available stock to 30"
+      },
+      "receipt": {
+        "inventory_item_id": "iitem_01M6NFVV5FAT8K1EPDZRYEH9JB",
+        "location_id": "sloc_01M6NFSG74MPGDGY2AV7B8BJ6G",
+        "before_stocked": 0,
+        "after_stocked": 30,
+        "available_quantity": 30
+      }
+    }
+  ],
+  "after": {
+    "run_id": "7e9ebdd6-bf5a-43f1-bf06-df13011e7ab7",
+    "checked_at": "2026-11-05T09:27:02.936501+00:00",
+    "policy": {
+      "threshold": 10,
+      "target": 30
+    },
+    "counts": {
+      "products": 7,
+      "orders": 2,
+      "inventory": 23
+    },
+    "recommendations": []
+  },
+  "final_demo_inventory": [
+    {
+      "sku": "ECOMOPS-MUG",
+      "levels": [
+        {
+          "id": "ilev_01M6NFVV72X4DCV0RBC4WE02DF",
+          "location_id": "sloc_01M6NFSG74MPGDGY2AV7B8BJ6G",
+          "metadata": null,
+          "inventory_item_id": "iitem_01M6NFVTV8EDFE9ZK3TMGVYEPN",
+          "raw_stocked_quantity": {
+            "value": "32",
+            "precision": 20
+          },
+          "raw_reserved_quantity": {
+            "value": "2",
+            "precision": 20
+          },
+          "raw_incoming_quantity": {
+            "value": "0",
+            "precision": 20
+          },
+          "created_at": "2026-11-05T09:15:30.403Z",
+          "updated_at": "2026-11-05T09:27:00.499Z",
+          "deleted_at": null,
+          "available_quantity": 30,
+          "stocked_quantity": 32,
+          "reserved_quantity": 2,
+          "incoming_quantity": 0
+        }
+      ]
+    },
+    {
+      "sku": "ECOMOPS-BAG",
+      "levels": [
+        {
+          "id": "ilev_01M6NFVV7C5K63VNHTC001X72M",
+          "location_id": "sloc_01M6NFSG74MPGDGY2AV7B8BJ6G",
+          "metadata": null,
+          "inventory_item_id": "iitem_01M6NFVV0GE18BBP0SQ8VDFHK5",
+          "raw_stocked_quantity": {
+            "value": "50",
+            "precision": 20
+          },
+          "raw_reserved_quantity": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_incoming_quantity": {
+            "value": "0",
+            "precision": 20
+          },
+          "created_at": "2026-11-05T09:15:30.412Z",
+          "updated_at": "2026-11-05T09:15:30.413Z",
+          "deleted_at": null,
+          "available_quantity": 50,
+          "stocked_quantity": 50,
+          "reserved_quantity": 0,
+          "incoming_quantity": 0
+        }
+      ]
+    },
+    {
+      "sku": "ECOMOPS-BOTTLE",
+      "levels": [
+        {
+          "id": "ilev_01M6NFVV7QPXGD5JBACRA3HZ3Q",
+          "location_id": "sloc_01M6NFSG74MPGDGY2AV7B8BJ6G",
+          "metadata": null,
+          "inventory_item_id": "iitem_01M6NFVV5FAT8K1EPDZRYEH9JB",
+          "raw_stocked_quantity": {
+            "value": "30",
+            "precision": 20
+          },
+          "raw_reserved_quantity": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_incoming_quantity": {
+            "value": "0",
+            "precision": 20
+          },
+          "created_at": "2026-11-05T09:15:30.423Z",
+          "updated_at": "2026-11-05T09:27:01.542Z",
+          "deleted_at": null,
+          "available_quantity": 30,
+          "stocked_quantity": 30,
+          "reserved_quantity": 0,
+          "incoming_quantity": 0
+        }
+      ]
+    }
+  ],
+  "assertions": [
+    "real_admin_api_reads",
+    "real_mcp_handshake_and_tool_calls",
+    "reserved_stock_in_policy",
+    "unauthorized_rejected",
+    "invalid_policy_rejected",
+    "approved_receipt_readback",
+    "duplicate_approval_idempotent",
+    "stale_snapshot_rejected",
+    "alerts_cleared"
+  ]
+}

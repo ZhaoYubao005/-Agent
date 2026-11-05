@@ -1,0 +1,15 @@
+{
+  "executed_at": "2026-11-05T09:26:03.188388+00:00",
+  "workflow": "Medusa development admin + real MCP/LangGraph inventory receipt",
+  "checks": {
+    "bash scripts/setup.sh": "exit 0; repeated setup preserved fixtures",
+    "npm run build": "exit 0; lint/backend/admin build passed",
+    "pytest": "5 passed; no skipped tests",
+    "Chromium": "admin login/products/orders rendered; 0 page errors",
+    "services.py": "start and repeated start passed; stop/restart checked separately"
+  },
+  "node": "24.22.1",
+  "npm": "11.9.0",
+  "python": "3.12.14",
+  "postgres_image": "postgres:17-bookworm@sha256:839fbb5a4942a7758dd93e18b42ea5649807491a0545b5eeeb8f0b8bb11857a5"
+}

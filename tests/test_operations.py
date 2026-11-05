@@ -31,3 +31,30 @@ def test_daily_cohort_obeys_local_day_and_excludes_canceled_units():
     assert result['statuses'] == {'pending': 1, 'canceled': 1}
     assert result['ordered_units_by_variant'] == {'demo': 2}
     assert result['revenue'] is None
+
+
+def test_alert_refresh_preserves_operator_status_and_audit(tmp_path, monkeypatch):
+    from ecomops.app import connect
+    from ecomops.operations_store import change_alert, operations_db, refresh_alerts
+
+    monkeypatch.setenv('ECOMOPS_AUDIT_DB', str(tmp_path / 'audit.sqlite3'))
+    alert = {'id': 'fulfillment_sla:order_1', 'age_hours': 24}
+    with operations_db(connect) as db:
+        assert refresh_alerts(db, [alert])[0]['status'] == 'open'
+        change_alert(db, alert['id'], 'acknowledged')
+        change_alert(db, alert['id'], 'acknowledged')
+    with operations_db(connect) as db:
+        refreshed = refresh_alerts(db, [{**alert, 'age_hours': 48}])
+        assert refreshed == [{**alert, 'age_hours': 48, 'status': 'acknowledged'}]
+        assert db.execute('SELECT count(*) FROM order_alert_events').fetchone()[0] == 1
+
+
+def test_report_generation_is_idempotent(tmp_path, monkeypatch):
+    from ecomops.app import connect
+    from ecomops.operations_store import operations_db, save_report
+
+    monkeypatch.setenv('ECOMOPS_AUDIT_DB', str(tmp_path / 'audit.sqlite3'))
+    with operations_db(connect) as db:
+        first = save_report(db, '2026-11-05', 'UTC', {'current': {'orders': 2}})
+        second = save_report(db, '2026-11-05', 'UTC', {'current': {'orders': 5}})
+        assert first == second

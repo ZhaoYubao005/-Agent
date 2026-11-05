@@ -115,3 +115,21 @@ async def test_real_api_mcp_langgraph_replenishment():
     }
     destination = Path(__file__).resolve().parents[1] / 'docs/evidence/phase1-live.json'
     destination.write_text(json.dumps(evidence, indent=2))
+
+
+@pytest.mark.asyncio
+async def test_real_mcp_daily_report_and_history():
+    orders = await Medusa().list_all('orders', 'orders')
+    demo = [order for order in orders if (order.get('metadata') or {}).get('ecomops_demo')]
+    assert demo
+    day = datetime.fromisoformat(demo[0]['created_at']).astimezone(timezone.utc).date()
+    headers = {'Authorization': f'Bearer {os.environ["ECOMOPS_API_TOKEN"]}'}
+    async with httpx.AsyncClient(base_url='http://127.0.0.1:8100', timeout=90, trust_env=False) as agent:
+        params = {'day': day.isoformat(), 'zone': 'UTC'}
+        response = await agent.post('/operations/reports/daily', params=params, headers=headers)
+        assert response.status_code == 200, response.text
+        report = response.json()
+        assert report['current']['orders'] >= 1
+        assert report['current']['revenue'] is None
+        saved = await agent.get(f'/operations/reports/history/{day}', headers=headers)
+        assert saved.json() == report

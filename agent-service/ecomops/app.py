@@ -7,12 +7,14 @@ import sqlite3
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, model_validator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ecomops.graph import graph
 from ecomops.operations_graph import operations_graph
+from ecomops import operations_store
 from ecomops.receipts import replenish_inventory
 
 app = FastAPI(title='EcomOps Agent', version='0.1.0')
@@ -175,3 +177,61 @@ async def daily_report(day: date, zone: str = Query(default='UTC', max_length=64
         'day': day, 'zone': zone, 'now': datetime.now(timezone.utc), 'sla_hours': 24,
     })
     return state['result']
+
+
+class AlertAction(BaseModel):
+    status: Literal['acknowledged', 'ignored', 'closed', 'open']
+
+
+@app.post('/operations/orders/alerts/refresh', dependencies=[Depends(authorize)])
+async def refresh_order_alerts(sla_hours: int = Query(default=24, ge=1, le=720)):
+    result = await order_alerts(sla_hours)
+    with operations_store.operations_db(connect) as db:
+        return operations_store.refresh_alerts(db, result['alerts'])
+
+
+@app.get('/operations/orders/alerts/saved', dependencies=[Depends(authorize)])
+def saved_alerts():
+    with operations_store.operations_db(connect) as db:
+        return operations_store.list_alerts(db)
+
+
+@app.post('/operations/orders/alerts/{alert_id}/status', dependencies=[Depends(authorize)])
+def set_alert_status(alert_id: str, action: AlertAction):
+    try:
+        with operations_store.operations_db(connect) as db:
+            operations_store.change_alert(db, alert_id, action.status)
+    except KeyError:
+        raise HTTPException(404, 'Alert not found')
+    except ValueError as error:
+        raise HTTPException(409, str(error))
+    return {'id': alert_id, 'status': action.status}
+
+
+@app.post('/operations/reports/daily', dependencies=[Depends(authorize)])
+async def generate_report(day: date, zone: str = Query(default='UTC', max_length=64)):
+    with operations_store.operations_db(connect) as db:
+        existing = operations_store.get_report(db, day.isoformat(), zone)
+    if existing:
+        return existing
+    result = await daily_report(day, zone)
+    with operations_store.operations_db(connect) as db:
+        return operations_store.save_report(db, day.isoformat(), zone, result)
+
+
+@app.get('/operations/reports/history', dependencies=[Depends(authorize)])
+def report_history(limit: int = Query(default=30, ge=1, le=100)):
+    with operations_store.operations_db(connect) as db:
+        return [dict(row) for row in db.execute(
+            'SELECT day, zone, generated_at FROM daily_reports ORDER BY day DESC, zone LIMIT ?',
+            (limit,),
+        )]
+
+
+@app.get('/operations/reports/history/{day}', dependencies=[Depends(authorize)])
+def historical_report(day: date, zone: str = Query(default='UTC', max_length=64)):
+    with operations_store.operations_db(connect) as db:
+        result = operations_store.get_report(db, day.isoformat(), zone)
+    if result is None:
+        raise HTTPException(404, 'Report not found')
+    return result

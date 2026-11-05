@@ -1,0 +1,87 @@
+services:
+  postgres:
+    image: postgres:17-bookworm@sha256:839fbb5a4942a7758dd93e18b42ea5649807491a0545b5eeeb8f0b8bb11857a5
+    environment:
+      POSTGRES_USER: ecomops
+      POSTGRES_DB: ecomops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "ecomops", "-d", "ecomops"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  medusa:
+    build:
+      context: .
+      dockerfile: docker/medusa.Dockerfile
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      MEDUSA_ADMIN_EMAIL: ${MEDUSA_ADMIN_EMAIL:-admin@ecomops.test}
+      MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD:?Set MEDUSA_ADMIN_PASSWORD in .env}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      COOKIE_SECRET: ${COOKIE_SECRET:?Set COOKIE_SECRET in .env}
+      STORE_CORS: ${STORE_CORS:-http://localhost:8000,http://127.0.0.1:8000}
+      ADMIN_CORS: ${ADMIN_CORS:-http://localhost:${MEDUSA_PORT:-9000},http://127.0.0.1:${MEDUSA_PORT:-9000}}
+      AUTH_CORS: ${AUTH_CORS:-http://localhost:${MEDUSA_PORT:-9000},http://127.0.0.1:${MEDUSA_PORT:-9000}}
+      MEDUSA_LOCAL_HTTP: '1'
+      HOST: 0.0.0.0
+      PORT: '9000'
+    ports:
+      - "127.0.0.1:${MEDUSA_PORT:-9000}:9000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      start_period: 60s
+      interval: 5s
+      timeout: 4s
+      retries: 24
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      dockerfile: docker/agent.Dockerfile
+    init: true
+    depends_on:
+      medusa:
+        condition: service_healthy
+    environment:
+      MEDUSA_URL: http://medusa:9000
+      MEDUSA_ADMIN_EMAIL: ${MEDUSA_ADMIN_EMAIL:-admin@ecomops.test}
+      MEDUSA_ADMIN_PASSWORD: ${MEDUSA_ADMIN_PASSWORD:?Set MEDUSA_ADMIN_PASSWORD in .env}
+      ECOMOPS_API_TOKEN: ${ECOMOPS_API_TOKEN:?Set ECOMOPS_API_TOKEN in .env}
+      ECOMOPS_ACCOUNTS:
+      ECOMOPS_AUDIT_DB: /data/audit.sqlite3
+      ECOMOPS_DATABASE_URL:
+      ECOMOPS_ALLOW_REPLENISHMENT: ${ECOMOPS_ALLOW_REPLENISHMENT:-0}
+      ECOMOPS_ISOLATED_FIXTURES: ${ECOMOPS_ISOLATED_FIXTURES:-0}
+      ECOMOPS_CONTAINER_FIXTURES: '1'
+      ECOMOPS_MCP_REPORT_READ:
+      ECOMOPS_LLM_PROTOCOL:
+      ECOMOPS_LLM_URL:
+      ECOMOPS_LLM_MODEL:
+      ECOMOPS_LLM_API_KEY:
+      ECOMOPS_REPORT_ZONE:
+      ECOMOPS_REPORT_HOUR:
+    volumes:
+      - agent-data:/data
+    ports:
+      - "127.0.0.1:${ECOMOPS_PORT:-8100}:8100"
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8100/health', timeout=3).close()"]
+      start_period: 15s
+      interval: 5s
+      timeout: 4s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  agent-data:

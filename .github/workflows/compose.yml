@@ -1,0 +1,139 @@
+name: EcomOps Compose smoke
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      COMPOSE_PROJECT_NAME: ecomops-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      ECOMOPS_ALLOW_REPLENISHMENT: '1'
+      ECOMOPS_ISOLATED_FIXTURES: '1'
+      ECOMOPS_ACCOUNTS: ''
+      MEDUSA_ADMIN_EMAIL: admin@ecomops.test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Prepare isolated credentials and validate Compose
+        run: |
+          mkdir -p compose-evidence
+          git rev-parse HEAD > compose-evidence/commit.txt
+          for key in POSTGRES_PASSWORD JWT_SECRET COOKIE_SECRET MEDUSA_ADMIN_PASSWORD ECOMOPS_API_TOKEN; do
+            value=$(python -c 'from secrets import token_hex; print(token_hex(24))')
+            echo "::add-mask::$value"
+            echo "$key=$value" >> "$GITHUB_ENV"
+          done
+      - name: Build and start containers
+        run: |
+          umask 077
+          printf 'ECOMOPS_DATABASE_URL=postgresql://ecomops:%s@postgres:5432/ecomops?sslmode=disable\n' "$POSTGRES_PASSWORD" > .env
+          docker compose config --quiet
+          docker compose up --detach --build --wait --wait-timeout 240
+          docker compose exec -T postgres psql -U ecomops -d ecomops -Atc 'SHOW server_version' > compose-evidence/postgres-version.txt
+          grep -E '^17\.11([[:space:]]|$)' compose-evidence/postgres-version.txt
+          docker compose exec -T medusa node -p 'require("/app/commerce/node_modules/@medusajs/medusa/package.json").version' > compose-evidence/medusa-version.txt
+          grep -x '2.22.3' compose-evidence/medusa-version.txt
+          docker compose exec -T agent python -c 'import os; assert os.environ["ECOMOPS_CONTAINER_FIXTURES"] == "1"'
+      - name: Verify PostgreSQL operations schema, migration and concurrency
+        run: |
+          ECOMOPS_TEST_POSTGRES_URL="postgresql://ecomops:$POSTGRES_PASSWORD@postgres:5432/ecomops?sslmode=disable" \
+            docker compose run --rm --no-deps -T -e ECOMOPS_TEST_POSTGRES_URL \
+              -v "$PWD/tests:/app/tests:ro" \
+              -v "$PWD/scripts:/app/scripts:ro" \
+              -v "$PWD/pytest.ini:/app/pytest.ini:ro" \
+              agent python -m pytest -q -p no:cacheprovider tests/test_postgres_operations.py | tee compose-evidence/postgres-tests.txt
+      - name: Verify real Medusa API, stdio MCP, and Agent workflows
+        run: |
+          python -m pip install -r requirements.lock
+          python -m pytest -q tests/test_live_flow.py --junitxml=compose-evidence/pytest.xml
+          cp docs/evidence/phase1-live.json compose-evidence/live-flow.json
+      - name: Recreate containers and verify persisted data
+        env:
+          PYTHONPATH: agent-service
+        run: |
+          python - <<'PY'
+          import asyncio
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          import httpx
+          from ecomops.medusa import Medusa
+
+          async def read_report(agent, day, zone):
+              response = await agent.get(f'/operations/reports/history/{day}', params={'zone': zone})
+              response.raise_for_status()
+              return response.json()
+
+          async def check():
+              evidence = json.loads(Path('compose-evidence/live-flow.json').read_text())
+              agent_options = {
+                  'base_url': 'http://127.0.0.1:8100',
+                  'headers': {'Authorization': f'Bearer {os.environ["ECOMOPS_API_TOKEN"]}'},
+                  'trust_env': False,
+              }
+              async with httpx.AsyncClient(**agent_options) as agent:
+                  response = await agent.get('/operations/reports/history')
+                  response.raise_for_status()
+                  saved = response.json()[0]
+                  expected_report = await read_report(agent, saved['day'], saved['zone'])
+
+              subprocess.run(['docker', 'compose', 'down'], check=True)
+              subprocess.run(['docker', 'compose', 'up', '--detach', '--wait', '--wait-timeout', '240'], check=True)
+
+              medusa = Medusa()
+              orders = await medusa.list_all('orders', 'orders')
+              order_id = evidence['demo_orders'][0]['id']
+              assert any(row['id'] == order_id for row in orders)
+              inventory = await medusa.list_all('inventory-items', 'inventory_items')
+              mug = next(row for row in inventory if row['sku'] == 'ECOMOPS-MUG')
+              assert mug['location_levels'][0]['available_quantity'] == 30
+              async with httpx.AsyncClient(**agent_options) as agent:
+                  for receipt in evidence['receipts']:
+                      response = await agent.get(f'/recommendations/{receipt["id"]}')
+                      assert response.status_code == 200
+                      assert response.json() == receipt
+                  assert await read_report(agent, saved['day'], saved['zone']) == expected_report
+
+          asyncio.run(check())
+          PY
+          docker compose exec -T postgres psql -U ecomops -d ecomops -Atc \
+            "SELECT COUNT(*) >= 2 FROM ecomops_agent.proposals WHERE status = 'applied'" | grep -x t
+          docker compose exec -T postgres psql -U ecomops -d ecomops -Atc \
+            "SELECT COUNT(*) >= 1 FROM ecomops_agent.daily_reports" | grep -x t
+          echo 'Commerce fixtures, stock, Agent receipts and report survived container recreation in PostgreSQL.' > compose-evidence/persistence.txt
+      - name: Verify the built Medusa admin in Chromium
+        run: |
+          python -m playwright install --with-deps chromium
+          python scripts/browser-check.py
+          cp docs/evidence/browser.json docs/evidence/admin-*.png compose-evidence/
+      - name: Collect container state and logs
+        if: always()
+        run: |
+          docker compose ps --all > compose-evidence/containers.txt
+          docker compose logs --no-color > compose-evidence/containers.log
+      - name: Remove disposable services and volumes
+        if: always()
+        run: docker compose down --volumes --remove-orphans
+      - name: Upload current-run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ecomops-compose-${{ github.run_id }}-${{ github.run_attempt }}
+          path: compose-evidence/
+          retention-days: 14

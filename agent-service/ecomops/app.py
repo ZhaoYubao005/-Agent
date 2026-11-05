@@ -3,39 +3,61 @@ import asyncio
 import csv
 import io
 import json
-import os
-import sqlite3
+import logging
 import uuid
+from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, model_validator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from ecomops.auth import administrator, authorize, operator
+from ecomops.audit import record
+from ecomops.auth import Actor, administrator, authorize, operator
+from ecomops.database import claim_receipt, connect, transaction
 from ecomops.graph import graph
+from ecomops.inventory_history import save_levels
+from ecomops.tools import call, commerce_tools
 from ecomops.operations_graph import operations_graph
 from ecomops import operations_store
 from ecomops.receipts import replenish_inventory
+from ecomops.scheduler import run_schedule
 
-app = FastAPI(title='EcomOps Agent', version='0.1.0')
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(run_schedule(connect, generate_report))
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+app = FastAPI(title='EcomOps Agent', version='0.1.0', lifespan=lifespan)
 apply_lock = asyncio.Lock()
+logger = logging.getLogger('ecomops.requests')
 
 
-def connect():
-    path = Path(os.environ.get('ECOMOPS_AUDIT_DB', '.runtime/audit.sqlite3'))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path)
-    db.row_factory = sqlite3.Row
-    db.execute('CREATE TABLE IF NOT EXISTS proposals '
-               '(id TEXT PRIMARY KEY, run_id TEXT, payload TEXT, status TEXT, receipt TEXT)')
-    return db
+@app.middleware('http')
+async def request_trace(request: Request, call_next):
+    request_id = uuid.uuid4().hex
+    response = await call_next(request)
+    response.headers['X-Request-ID'] = request_id
+    route = request.scope.get('route')
+    logger.info('request_id=%s method=%s route=%s status=%s', request_id,
+                request.method, getattr(route, 'path', 'unknown'), response.status_code)
+    return response
 
 
 class Policy(BaseModel):
     threshold: int = Field(default=10, ge=1, le=1000)
     target: int = Field(default=30, ge=2, le=10000)
+
+    demand_window_days: int | None = Field(default=None, ge=7, le=180)
+    lead_time_days: int = Field(default=7, ge=1, le=180)
+    safety_stock: int = Field(default=5, ge=0, le=10000)
 
     @model_validator(mode='after')
     def validate_target(self):
@@ -50,15 +72,17 @@ def health():
 
 
 @app.post('/inventory/check', dependencies=[Depends(operator)])
-async def check(policy: Policy):
-    state = await graph.ainvoke(policy.model_dump())
+async def check(policy: Policy, actor: Actor = Depends(operator)):
+    state = await graph.ainvoke({**policy.model_dump(), 'now': datetime.now(timezone.utc)})
     run_id = str(uuid.uuid4())
     result = []
-    with connect() as db:
+    with transaction() as db:
+        save_levels(db, state['inventory'])
         for proposal in state['recommendations']:
             proposal_id = str(uuid.uuid4())
             db.execute('INSERT INTO proposals VALUES (?, ?, ?, ?, ?)',
                        (proposal_id, run_id, json.dumps(proposal), 'proposed', None))
+            record(db, actor, 'proposed', proposal_id)
             result.append({'id': proposal_id, 'status': 'proposed', **proposal})
     return {'run_id': run_id, 'checked_at': datetime.now(timezone.utc).isoformat(),
             'policy': policy.model_dump(),
@@ -68,7 +92,7 @@ async def check(policy: Policy):
 
 @app.get('/recommendations/{proposal_id}', dependencies=[Depends(authorize)])
 def retrieve(proposal_id: str):
-    with connect() as db:
+    with transaction() as db:
         row = db.execute('SELECT * FROM proposals WHERE id=?', (proposal_id,)).fetchone()
     if not row:
         raise HTTPException(404, 'Proposal not found')
@@ -78,7 +102,7 @@ def retrieve(proposal_id: str):
 
 
 @app.post('/recommendations/{proposal_id}/receive', dependencies=[Depends(operator)])
-async def receive(proposal_id: str):
+async def receive(proposal_id: str, actor: Actor = Depends(operator)):
     # One worker only in phase one. Crash during application leaves status applying:
     # never blindly replay an ambiguous receipt; inspect Medusa and audit it first.
     async with apply_lock:
@@ -88,19 +112,12 @@ async def receive(proposal_id: str):
         if current['status'] != 'approved':
             raise HTTPException(409, 'Receipt pending reconciliation; do not retry stock writes')
         proposal = current['proposal']
-        with connect() as db:
-            claimed = db.execute(
-                """
-                UPDATE proposals SET status='applying'
-                WHERE id=? AND status='approved' AND NOT EXISTS (
-                    SELECT 1 FROM proposals AS pending
-                    WHERE pending.status IN ('applying', 'needs_review')
-                    AND json_extract(pending.payload, '$.inventory_item_id')=?
-                    AND json_extract(pending.payload, '$.location_id')=?
-                )
-                """,
-                (proposal_id, proposal['inventory_item_id'], proposal['location_id']),
-            ).rowcount
+        with transaction() as db:
+            claimed = claim_receipt(
+                db, proposal_id, proposal['inventory_item_id'], proposal['location_id'],
+            )
+            if claimed:
+                record(db, actor, 'applying', proposal_id)
         if not claimed:
             current = retrieve(proposal_id)
             if current['status'] == 'applied':
@@ -115,22 +132,26 @@ async def receive(proposal_id: str):
                 expected_reserved=proposal['reserved_quantity'],
             )
         except Exception:
-            with connect() as db:
+            with transaction() as db:
                 db.execute('UPDATE proposals SET status=? WHERE id=?', ('needs_review', proposal_id))
+                record(db, actor, 'needs_review', proposal_id)
             raise HTTPException(409, 'Stock application failed or is uncertain; reconcile with Medusa')
-        with connect() as db:
+        with transaction() as db:
             db.execute('UPDATE proposals SET status=?, receipt=? WHERE id=?',
                        ('applied', json.dumps(receipt), proposal_id))
+            record(db, actor, 'applied', proposal_id)
         return retrieve(proposal_id)
 
 
-def transition(proposal_id: str, allowed: tuple[str, ...], target: str):
-    with connect() as db:
+def transition(proposal_id: str, allowed: tuple[str, ...], target: str, actor: Actor, note=None):
+    with transaction() as db:
         placeholders = ','.join('?' for _ in allowed)
-        db.execute(
+        changed = db.execute(
             f'UPDATE proposals SET status=? WHERE id=? AND status IN ({placeholders})',
             (target, proposal_id, *allowed),
-        )
+        ).rowcount
+        if changed:
+            record(db, actor, target, proposal_id, note)
     current = retrieve(proposal_id)
     if current['status'] != target:
         raise HTTPException(409, 'Proposal state does not allow this action')
@@ -138,18 +159,18 @@ def transition(proposal_id: str, allowed: tuple[str, ...], target: str):
 
 
 @app.post('/recommendations/{proposal_id}/approve', dependencies=[Depends(administrator)])
-def approve(proposal_id: str):
-    return transition(proposal_id, ('proposed',), 'approved')
+def approve(proposal_id: str, actor: Actor = Depends(administrator)):
+    return transition(proposal_id, ('proposed',), 'approved', actor)
 
 
 @app.post('/recommendations/{proposal_id}/reject', dependencies=[Depends(administrator)])
-def reject(proposal_id: str):
-    return transition(proposal_id, ('proposed',), 'rejected')
+def reject(proposal_id: str, actor: Actor = Depends(administrator)):
+    return transition(proposal_id, ('proposed',), 'rejected', actor)
 
 
 @app.post('/recommendations/{proposal_id}/cancel', dependencies=[Depends(operator)])
-def cancel(proposal_id: str):
-    return transition(proposal_id, ('proposed', 'approved'), 'cancelled')
+def cancel(proposal_id: str, actor: Actor = Depends(operator)):
+    return transition(proposal_id, ('proposed', 'approved'), 'cancelled', actor)
 
 
 @app.get('/operations/orders/alerts', dependencies=[Depends(authorize)])
@@ -192,10 +213,11 @@ def saved_alerts():
 
 
 @app.post('/operations/orders/alerts/{alert_id}/status', dependencies=[Depends(operator)])
-def set_alert_status(alert_id: str, action: AlertAction):
+def set_alert_status(alert_id: str, action: AlertAction, actor: Actor = Depends(operator)):
     try:
         with operations_store.operations_db(connect) as db:
-            operations_store.change_alert(db, alert_id, action.status)
+            if operations_store.change_alert(db, alert_id, action.status):
+                record(db, actor, f'alert_{action.status}', alert_id)
     except KeyError:
         raise HTTPException(404, 'Alert not found')
     except ValueError as error:
@@ -205,6 +227,12 @@ def set_alert_status(alert_id: str, action: AlertAction):
 
 @app.post('/operations/reports/daily', dependencies=[Depends(operator)])
 async def generate_report(day: date, zone: str = Query(default='UTC', max_length=64)):
+    try:
+        report_zone = ZoneInfo(zone)
+    except (ValueError, ZoneInfoNotFoundError):
+        raise HTTPException(422, 'Unknown IANA time zone')
+    if day >= datetime.now(report_zone).date():
+        raise HTTPException(422, 'Only a completed business day can be saved. Use the report preview for today.')
     with operations_store.operations_db(connect) as db:
         existing = operations_store.get_report(db, day.isoformat(), zone)
     if existing:
@@ -254,3 +282,58 @@ def export_report(day: date, zone: str = Query(default='UTC', max_length=64)):
     return Response(output.getvalue(), media_type='text/csv', headers={
         'Content-Disposition': f'attachment; filename="ecomops-{day.isoformat()}.csv"',
     })
+
+
+class Reconciliation(BaseModel):
+    note: str = Field(min_length=8, max_length=500, pattern=r'\S')
+
+
+@app.post('/recommendations/{proposal_id}/reconcile')
+def reconcile(proposal_id: str, details: Reconciliation, actor: Actor = Depends(administrator)):
+    return transition(proposal_id, ('needs_review',), 'reconciled', actor, details.note)
+
+
+@app.get('/operations/audit', dependencies=[Depends(administrator)])
+def audit_log(limit: int = Query(default=50, ge=1, le=200)):
+    with transaction() as db:
+        return [dict(row) for row in db.execute(
+            'SELECT * FROM audit_events ORDER BY sequence DESC LIMIT ?', (limit,),
+        )]
+
+
+@app.get('/operations/tasks', dependencies=[Depends(authorize)])
+def task_history(limit: int = Query(default=30, ge=1, le=100)):
+    with operations_store.operations_db(connect) as db:
+        return [dict(row) for row in db.execute(
+            'SELECT day, zone, claim, state FROM report_jobs ORDER BY claim DESC LIMIT ?', (limit,),
+        )]
+
+
+@app.get('/inventory/levels', dependencies=[Depends(authorize)])
+async def inventory_levels(sku: str | None = Query(None, max_length=200),
+                           location_id: str | None = Query(None, max_length=200)):
+    async with commerce_tools() as session:
+        inventory = await call(session, 'list_inventory')
+    return [
+        {'inventory_item_id': item['id'], 'sku': item.get('sku'), **level}
+        for item in inventory if sku is None or item.get('sku') == sku
+        for level in item.get('location_levels') or []
+        if location_id is None or level['location_id'] == location_id
+    ]
+
+
+@app.get('/inventory/history', dependencies=[Depends(authorize)])
+def inventory_history(sku: str = Query(min_length=1, max_length=200),
+                      location_id: str = Query(min_length=1, max_length=200),
+                      limit: int = Query(default=30, ge=1, le=100)):
+    with transaction() as db:
+        return [dict(row) for row in db.execute(
+            """SELECT * FROM inventory_observations WHERE sku=? AND location_id=?
+               ORDER BY observed_at DESC LIMIT ?""",
+            (sku, location_id, limit),
+        )]
+
+
+@app.get('/identity')
+def identity(actor: Actor = Depends(authorize)):
+    return {'account': actor.name, 'role': actor.role}

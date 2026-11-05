@@ -9,23 +9,6 @@ def operations_db(connect):
     db = connect()
     try:
         with db:
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS order_alerts (
-                    id TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL
-                )
-            """)
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS order_alert_events (
-                    sequence INTEGER PRIMARY KEY, alert_id TEXT NOT NULL,
-                    status TEXT NOT NULL, occurred_at TEXT NOT NULL
-                )
-            """)
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS daily_reports (
-                    day TEXT NOT NULL, zone TEXT NOT NULL, payload TEXT NOT NULL,
-                    generated_at TEXT NOT NULL, PRIMARY KEY (day, zone)
-                )
-            """)
             yield db
     finally:
         db.close()
@@ -52,7 +35,7 @@ def change_alert(db, alert_id, target):
     if row is None:
         raise KeyError(alert_id)
     if row['status'] == target:
-        return
+        return False
     transitions = {
         'open': {'acknowledged', 'ignored', 'closed'},
         'acknowledged': {'ignored', 'closed'},
@@ -67,8 +50,9 @@ def change_alert(db, alert_id, target):
     ).rowcount
     if not changed:
         raise ValueError('Alert changed concurrently')
-    db.execute('INSERT INTO order_alert_events VALUES (NULL, ?, ?, ?)',
+    db.execute('INSERT INTO order_alert_events (alert_id, status, occurred_at) VALUES (?, ?, ?)',
                (alert_id, target, datetime.now(timezone.utc).isoformat()))
+    return True
 
 
 def save_report(db, day, zone, report):

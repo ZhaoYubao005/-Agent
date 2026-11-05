@@ -10,11 +10,16 @@ button, input { font: inherit; padding: .4rem; margin: .25rem; }
 pre { overflow: auto; background: #eef2f7; padding: 1rem; }
 </style>
 <h1>EcomOps 运营控制台</h1>
-<label>服务令牌 <input id="token" type="password" autocomplete="off"></label>
+<label>个人访问令牌 <input id="token" type="password" autocomplete="off"></label>
+<button id="login">验证身份</button><button id="logout">退出</button>
 <p id="status" role="status"></p>
 <section>
 <h2>库存与收货</h2>
+<label>预警阈值 <input id="threshold" type="number" min="1" max="1000" value="10"></label>
+<label>补货目标 <input id="target" type="number" min="2" max="10000" value="30"></label>
 <button id="inventory">检查库存</button>
+<label>SKU <input id="sku"></label><label>仓库 ID <input id="location"></label>
+<button id="levels">实际库存</button><button id="trend">库存趋势</button>
 <label>提案 ID <input id="proposal"></label>
 <button id="approval">批准</button><button id="receipt">确认收到商品</button>
 <button id="rejection">拒绝</button><button id="cancellation">取消</button>
@@ -29,7 +34,11 @@ pre { overflow: auto; background: #eef2f7; padding: 1rem; }
 <h2>运营日报</h2>
 <label>日期 <input id="day" type="date"></label>
 <label>时区 <input id="zone" value="Asia/Shanghai"></label>
-<button id="report">生成日报</button><button id="history">历史日报</button>
+<button id="preview">预览日报</button><button id="report">保存已完成日报</button><button id="history">历史日报</button><button id="saved-report">查看指定日报</button>
+</section>
+<section>
+<h2>运行状态和审计</h2>
+<button id="tasks">日报任务</button><button id="audit">操作审计</button>
 </section>
 <pre id="result" aria-label="操作结果"></pre>
 <script>
@@ -51,9 +60,23 @@ async function request(path, method = 'GET', body) {
     byId('status').textContent = '请求失败，请检查服务连接';
   }
 }
+byId('login').onclick = () => request('/identity');
+byId('logout').onclick = () => {
+  byId('token').value = '';
+  byId('result').textContent = '';
+  byId('status').textContent = '已退出';
+};
 const proposal = action => request('/recommendations/' + encodeURIComponent(value('proposal')) + '/' + action, 'POST');
 const alertAction = status => request('/operations/orders/alerts/' + encodeURIComponent(value('alert')) + '/status', 'POST', {status});
-byId('inventory').onclick = () => request('/inventory/check', 'POST', {});
+byId('inventory').onclick = () => request('/inventory/check', 'POST', {threshold: Number(value('threshold')), target: Number(value('target'))});
+const inventoryQuery = () => {
+  const params = new URLSearchParams();
+  if (value('sku')) params.set('sku', value('sku'));
+  if (value('location')) params.set('location_id', value('location'));
+  return params;
+};
+byId('levels').onclick = () => request('/inventory/levels?' + inventoryQuery());
+byId('trend').onclick = () => request('/inventory/history?' + inventoryQuery());
 byId('approval').onclick = () => proposal('approve');
 byId('receipt').onclick = () => { if (confirm('确认商品已实际收到？')) proposal('receive'); };
 byId('rejection').onclick = () => proposal('reject');
@@ -62,7 +85,11 @@ byId('refresh').onclick = () => request('/operations/orders/alerts/refresh', 'PO
 byId('alerts').onclick = () => request('/operations/orders/alerts/saved');
 byId('acknowledge').onclick = () => alertAction('acknowledged');
 byId('close-alert').onclick = () => alertAction('closed');
+byId('preview').onclick = () => request('/operations/reports/daily?' + query());
 byId('report').onclick = () => request('/operations/reports/daily?' + query(), 'POST');
+byId('saved-report').onclick = () => request('/operations/reports/history/' + encodeURIComponent(value('day')) + '?' + query());
 byId('history').onclick = () => request('/operations/reports/history');
+byId('tasks').onclick = () => request('/operations/tasks');
+byId('audit').onclick = () => request('/operations/audit');
 </script>
 </html>

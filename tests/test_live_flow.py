@@ -2,7 +2,7 @@
 import asyncio
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import httpx
 import pytest
@@ -126,10 +126,14 @@ async def test_real_mcp_daily_report_and_history():
     headers = {'Authorization': f'Bearer {os.environ["ECOMOPS_API_TOKEN"]}'}
     async with httpx.AsyncClient(base_url='http://127.0.0.1:8100', timeout=90, trust_env=False) as agent:
         params = {'day': day.isoformat(), 'zone': 'UTC'}
+        preview = await agent.get('/operations/reports/daily', params=params, headers=headers)
+        assert preview.status_code == 200, preview.text
+        assert preview.json()['current']['orders'] >= 1
+        day = datetime.now(timezone.utc).date() - timedelta(days=1)
+        params['day'] = day.isoformat()
         response = await agent.post('/operations/reports/daily', params=params, headers=headers)
         assert response.status_code == 200, response.text
         report = response.json()
-        assert report['current']['orders'] >= 1
         assert report['current']['revenue'] is None
         saved = await agent.get(f'/operations/reports/history/{day}', headers=headers)
         assert saved.json() == report

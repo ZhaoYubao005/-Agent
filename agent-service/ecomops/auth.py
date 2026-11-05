@@ -18,15 +18,26 @@ security = HTTPBearer()
 
 
 def authorize(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
-    accounts = json.loads(os.environ.get('ECOMOPS_ACCOUNTS', '{}'))
+    configured = os.environ.get('ECOMOPS_ACCOUNTS')
+    try:
+        accounts = json.loads(configured) if configured else {}
+        if not isinstance(accounts, dict):
+            raise ValueError
+        if any(not isinstance(entry, dict)
+               or entry.get('role') not in {'admin', 'operator', 'viewer'}
+               or not isinstance(entry.get('token'), str)
+               or not entry['token'] for entry in accounts.values()):
+            raise ValueError
+        if len({entry['token'] for entry in accounts.values()}) != len(accounts):
+            raise ValueError
+    except ValueError:
+        raise HTTPException(503, 'Account configuration unavailable') from None
     legacy = os.environ.get('ECOMOPS_API_TOKEN')
-    if legacy and not accounts:
+    if legacy and not configured:
         accounts = {'local-service': {'role': 'admin', 'token': legacy}}
     for name, account in accounts.items():
         token = account['token']
         if token and hmac.compare_digest(credentials.credentials.encode(), token.encode()):
-            if account['role'] not in {'admin', 'operator', 'viewer'}:
-                break
             actor = Actor(name, account['role'])
             request.state.actor = actor
             return actor

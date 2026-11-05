@@ -1,6 +1,5 @@
 """Local authenticated API with durable proposals and receipt audit records."""
 import asyncio
-import hmac
 import json
 import os
 import sqlite3
@@ -10,16 +9,15 @@ from pathlib import Path
 from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, model_validator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from ecomops.auth import administrator, authorize, operator
 from ecomops.graph import graph
 from ecomops.operations_graph import operations_graph
 from ecomops import operations_store
 from ecomops.receipts import replenish_inventory
 
 app = FastAPI(title='EcomOps Agent', version='0.1.0')
-security = HTTPBearer()
 apply_lock = asyncio.Lock()
 
 
@@ -31,12 +29,6 @@ def connect():
     db.execute('CREATE TABLE IF NOT EXISTS proposals '
                '(id TEXT PRIMARY KEY, run_id TEXT, payload TEXT, status TEXT, receipt TEXT)')
     return db
-
-
-def authorize(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    expected = os.environ.get('ECOMOPS_API_TOKEN', '')
-    if not expected or not hmac.compare_digest(credentials.credentials, expected):
-        raise HTTPException(401, 'Invalid service token')
 
 
 class Policy(BaseModel):
@@ -55,7 +47,7 @@ def health():
     return {'status': 'ok'}
 
 
-@app.post('/inventory/check', dependencies=[Depends(authorize)])
+@app.post('/inventory/check', dependencies=[Depends(operator)])
 async def check(policy: Policy):
     state = await graph.ainvoke(policy.model_dump())
     run_id = str(uuid.uuid4())
@@ -83,7 +75,7 @@ def retrieve(proposal_id: str):
             'receipt': json.loads(row['receipt']) if row['receipt'] else None}
 
 
-@app.post('/recommendations/{proposal_id}/receive', dependencies=[Depends(authorize)])
+@app.post('/recommendations/{proposal_id}/receive', dependencies=[Depends(operator)])
 async def receive(proposal_id: str):
     # One worker only in phase one. Crash during application leaves status applying:
     # never blindly replay an ambiguous receipt; inspect Medusa and audit it first.
@@ -143,17 +135,17 @@ def transition(proposal_id: str, allowed: tuple[str, ...], target: str):
     return current
 
 
-@app.post('/recommendations/{proposal_id}/approve', dependencies=[Depends(authorize)])
+@app.post('/recommendations/{proposal_id}/approve', dependencies=[Depends(administrator)])
 def approve(proposal_id: str):
     return transition(proposal_id, ('proposed',), 'approved')
 
 
-@app.post('/recommendations/{proposal_id}/reject', dependencies=[Depends(authorize)])
+@app.post('/recommendations/{proposal_id}/reject', dependencies=[Depends(administrator)])
 def reject(proposal_id: str):
     return transition(proposal_id, ('proposed',), 'rejected')
 
 
-@app.post('/recommendations/{proposal_id}/cancel', dependencies=[Depends(authorize)])
+@app.post('/recommendations/{proposal_id}/cancel', dependencies=[Depends(operator)])
 def cancel(proposal_id: str):
     return transition(proposal_id, ('proposed', 'approved'), 'cancelled')
 
@@ -184,7 +176,7 @@ class AlertAction(BaseModel):
     status: Literal['acknowledged', 'ignored', 'closed', 'open']
 
 
-@app.post('/operations/orders/alerts/refresh', dependencies=[Depends(authorize)])
+@app.post('/operations/orders/alerts/refresh', dependencies=[Depends(operator)])
 async def refresh_order_alerts(sla_hours: int = Query(default=24, ge=1, le=720)):
     result = await order_alerts(sla_hours)
     with operations_store.operations_db(connect) as db:
@@ -197,7 +189,7 @@ def saved_alerts():
         return operations_store.list_alerts(db)
 
 
-@app.post('/operations/orders/alerts/{alert_id}/status', dependencies=[Depends(authorize)])
+@app.post('/operations/orders/alerts/{alert_id}/status', dependencies=[Depends(operator)])
 def set_alert_status(alert_id: str, action: AlertAction):
     try:
         with operations_store.operations_db(connect) as db:
@@ -209,7 +201,7 @@ def set_alert_status(alert_id: str, action: AlertAction):
     return {'id': alert_id, 'status': action.status}
 
 
-@app.post('/operations/reports/daily', dependencies=[Depends(authorize)])
+@app.post('/operations/reports/daily', dependencies=[Depends(operator)])
 async def generate_report(day: date, zone: str = Query(default='UTC', max_length=64)):
     with operations_store.operations_db(connect) as db:
         existing = operations_store.get_report(db, day.isoformat(), zone)

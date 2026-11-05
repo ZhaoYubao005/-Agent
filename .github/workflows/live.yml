@@ -34,6 +34,9 @@ jobs:
         run: python3 scripts/services.py start
       - name: Run unit and live integration tests
         run: |
+          pg_password=$(python3 -c 'import json; print(json.load(open(".runtime/credentials.json"))["db_password"])')
+          echo "::add-mask::$pg_password"
+          export ECOMOPS_TEST_POSTGRES_URL="postgresql://ecomops:$pg_password@127.0.0.1:5432/ecomops"
           python3 scripts/run-with-env.py .venv/bin/python -m pytest -q --junitxml=ci-evidence/pytest.xml
           cp docs/evidence/phase1-live.json ci-evidence/live-flow.json
       - name: Verify Medusa admin in Chromium
@@ -43,6 +46,9 @@ jobs:
           cp docs/evidence/browser.json docs/evidence/admin-*.png ci-evidence/
       - name: Verify operations console in Chromium
         run: python3 scripts/run-with-env.py .venv/bin/python scripts/console-check.py | tee ci-evidence/console.json
+        shell: bash
+      - name: Measure seeded business workload
+        run: python3 scripts/run-with-env.py .venv/bin/python scripts/perf-check.py | tee ci-evidence/performance.json
         shell: bash
       - name: Upload current-run evidence
         if: always()

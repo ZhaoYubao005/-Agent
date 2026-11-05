@@ -5,6 +5,8 @@ on:
       - agent-service/ecomops/advice.py
       - scripts/llm-check.py
       - .github/workflows/llm.yml
+  push:
+    branches: [feat/ecomops-operations]
   workflow_dispatch:
 permissions:
   contents: read

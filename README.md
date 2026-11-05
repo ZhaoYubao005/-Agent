@@ -1,6 +1,6 @@
 # EcomOps Agent
 
-第一阶段：基于 Medusa 官方开源应用的电商运营 Agent。已实现真实商品、订单、库存 API 读取，以及通过 MCP / LangGraph 完成的库存预警、补货建议、显式批准、入库与回读审计。
+EcomOps Agent 是基于 Medusa 2.22.3 的电商运营应用，提供库存、订单异常、日报和审计控制台。
 
 ## 结构
 
@@ -37,7 +37,7 @@ python3 scripts/services.py stop
 
 ## 验收与边界
 
-查看 [第一阶段报告](docs/phase1-report.md)、[测试证据](docs/evidence/phase1-live.json)、[架构](docs/architecture.md) 和 [开源来源](docs/open-source.md)。这是单实例开发演示，不是生产部署：规则为确定性库存阈值，尚未接入付费 LLM、真实供应商、采购支付或多仓优化。
+第一阶段的历史验收保留在 [阶段报告](docs/phase1-report.md) 与 [业务证据](docs/evidence/phase1-live.json)。当前功能与部署见下文。
 
 ### Inventory approval and receipt
 

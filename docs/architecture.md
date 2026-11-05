@@ -9,12 +9,12 @@ flowchart LR
   E --> F[(PostgreSQL 17)]
   B --> G[(SQLite 建议 / 状态 / 入库回执)]
   A -->|显式批准建议| B
-  B -->|replenish_inventory| D
+  B -->|approved inventory receipt| E
 ```
 
 Medusa 保有商品、订单、库存和预留数据的唯一业务事实来源。Agent 不直接读写 PostgreSQL。官方管理后台与 Agent 查询的是同一数据库。
 
-LangGraph 使用 `read_medusa_via_mcp → inventory_policy` 两个节点。MCP 提供 `list_products`、`list_orders`、`list_inventory`、`replenish_inventory`。读取分页，超过 10000 条时失败而非静默分析不完整数据。
+LangGraph 使用 `read_medusa_via_mcp → inventory_policy` 两个节点。MCP 提供 `list_products`、`list_orders`、`list_inventory`。读取分页，超过 10000 条时失败而非静默分析不完整数据。
 
 库存规则按每个库存项、每个库位计算：
 

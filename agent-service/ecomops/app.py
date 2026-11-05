@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, model_validator
 from ecomops.graph import graph
-from ecomops.tools import commerce_tools, call
+from ecomops.receipts import replenish_inventory
 
 app = FastAPI(title='EcomOps Agent', version='0.1.0')
 security = HTTPBearer()
@@ -90,12 +90,23 @@ async def approve(proposal_id: str):
             raise HTTPException(409, 'Receipt pending reconciliation; do not retry stock writes')
         proposal = current['proposal']
         with connect() as db:
-            db.execute('UPDATE proposals SET status=? WHERE id=?', ('applying', proposal_id))
+            claimed = db.execute(
+                "UPDATE proposals SET status='applying' WHERE id=? AND status='proposed'",
+                (proposal_id,),
+            ).rowcount
+        if not claimed:
+            current = retrieve(proposal_id)
+            if current['status'] == 'applied':
+                return current
+            raise HTTPException(409, 'Receipt already claimed')
         try:
-            async with commerce_tools() as session:
-                receipt = await call(session, 'replenish_inventory', {
-                    key: proposal[key] for key in
-                    ['inventory_item_id', 'location_id', 'quantity', 'expected_stocked']})
+            receipt = await replenish_inventory(
+                inventory_item_id=proposal['inventory_item_id'],
+                location_id=proposal['location_id'],
+                quantity=proposal['quantity'],
+                expected_stocked=proposal['expected_stocked'],
+                expected_reserved=proposal['reserved_quantity'],
+            )
         except Exception:
             with connect() as db:
                 db.execute('UPDATE proposals SET status=? WHERE id=?', ('needs_review', proposal_id))

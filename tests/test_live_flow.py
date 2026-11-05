@@ -34,7 +34,7 @@ async def test_real_api_mcp_langgraph_replenishment():
                              json={'stocked_quantity': stocked})
     async with commerce_tools() as session:
         names = [t.name for t in (await session.list_tools()).tools]
-        assert set(names) == {'list_products', 'list_orders', 'list_inventory', 'replenish_inventory'}
+        assert set(names) == {'list_products', 'list_orders', 'list_inventory'}
         assert len(await call(session, 'list_products')) == len(products)
         assert len(await call(session, 'list_orders')) == len(orders)
         mcp_inventory = await call(session, 'list_inventory')

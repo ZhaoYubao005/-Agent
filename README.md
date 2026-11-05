@@ -38,3 +38,17 @@ python3 scripts/services.py stop
 ## 验收与边界
 
 查看 [第一阶段报告](docs/phase1-report.md)、[测试证据](docs/evidence/phase1-live.json)、[架构](docs/architecture.md) 和 [开源来源](docs/open-source.md)。这是单实例开发演示，不是生产部署：规则为确定性库存阈值，尚未接入付费 LLM、真实供应商、采购支付或多仓优化。
+
+### Inventory approval and receipt
+
+Approval moves a proposal to `approved` without modifying stock. Confirm
+physical receipt via `POST /recommendations/{id}/receive`. Before receipt,
+a proposed or approved request can be cancelled. A pending request can be
+rejected. A receipt with an uncertain result requires manual reconciliation.
+
+The current Medusa Admin API adapter uses separate snapshot and update calls.
+An external writer can change stock between those calls. The development
+wrapper therefore disables receipts by default. The isolated CI runner enables
+`ECOMOPS_ISOLATED_FIXTURES=1` for its disposable stack. The adapter limits these
+writes to the three seeded fixture SKUs. Keep fixture receipt mode disabled
+for shared or production Medusa instances.

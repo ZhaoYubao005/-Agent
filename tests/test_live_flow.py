@@ -59,7 +59,12 @@ async def test_real_api_mcp_langgraph_replenishment():
         stale_proposal = next(p for p in extra.json()['recommendations'] if p['sku'] == 'ECOMOPS-MUG')
         receipts = []
         for proposal in proposals.values():
-            path = f'/recommendations/{proposal["id"]}/approve'
+            base = f'/recommendations/{proposal["id"]}'
+            approval = await agent.post(f'{base}/approve', headers=headers)
+            assert approval.status_code == 200, approval.text
+            assert approval.json()['status'] == 'approved'
+            assert approval.json()['receipt'] is None
+            path = f'{base}/receive'
             first = await agent.post(path, headers=headers)
             assert first.status_code == 200, first.text
             applied = first.json()
@@ -74,7 +79,9 @@ async def test_real_api_mcp_langgraph_replenishment():
         after = after_response.json()
         assert after['recommendations'] == []
         # Another proposal based on the old inventory snapshot must not overwrite receipts.
-        stale = await agent.post(f'/recommendations/{stale_proposal["id"]}/approve', headers=headers)
+        stale_path = f'/recommendations/{stale_proposal["id"]}'
+        assert (await agent.post(f'{stale_path}/approve', headers=headers)).status_code == 200
+        stale = await agent.post(f'{stale_path}/receive', headers=headers)
         assert stale.status_code == 409
         stale_audit = await agent.get(f'/recommendations/{stale_proposal["id"]}', headers=headers)
         assert stale_audit.json()['status'] == 'needs_review'

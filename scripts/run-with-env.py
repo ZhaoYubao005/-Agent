@@ -12,7 +12,7 @@ env.update({
     'MEDUSA_ADMIN_EMAIL': 'admin@ecomops.test',
     'MEDUSA_ADMIN_PASSWORD': c['admin_password'],
     'ECOMOPS_API_TOKEN': c['api_token'],
-    'ECOMOPS_ALLOW_REPLENISHMENT': '1',
+    'ECOMOPS_ALLOW_REPLENISHMENT': os.environ.get('ECOMOPS_ISOLATED_FIXTURES', '0'),
     'ECOMOPS_AUDIT_DB': str(root / '.runtime/audit.sqlite3'),
     'PYTHONPATH': str(root / 'agent-service'),
     'MEDUSA_TELEMETRY_DISABLED': '1',

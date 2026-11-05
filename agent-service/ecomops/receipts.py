@@ -5,13 +5,16 @@ import os
 async def replenish_inventory(inventory_item_id: str, location_id: str,
                               quantity: int, expected_stocked: int, expected_reserved: int) -> dict:
     """Receive approved demo stock, rejecting stale snapshots. Development only."""
-    if os.environ.get('ECOMOPS_ALLOW_REPLENISHMENT') != '1':
+    if os.environ.get('ECOMOPS_ALLOW_REPLENISHMENT') != '1' or os.environ.get('ECOMOPS_ISOLATED_FIXTURES') != '1':
         raise ValueError('Stock writes are disabled')
     if not 1 <= quantity <= 10000:
         raise ValueError('quantity must be 1..10000')
     medusa = Medusa()
     item = await medusa.request('GET', f'/admin/inventory-items/{inventory_item_id}')
-    levels = item['inventory_item']['location_levels']
+    inventory = item['inventory_item']
+    if inventory.get('sku') not in {'ECOMOPS-MUG', 'ECOMOPS-BAG', 'ECOMOPS-BOTTLE'}:
+        raise ValueError('Stock receipts require an isolated demo fixture')
+    levels = inventory['location_levels']
     level = next((x for x in levels if x['location_id'] == location_id), None)
     if (level is None or int(level['stocked_quantity']) != expected_stocked
             or int(level['reserved_quantity']) != expected_reserved):

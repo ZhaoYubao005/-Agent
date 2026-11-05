@@ -78,20 +78,20 @@ def retrieve(proposal_id: str):
             'receipt': json.loads(row['receipt']) if row['receipt'] else None}
 
 
-@app.post('/recommendations/{proposal_id}/approve', dependencies=[Depends(authorize)])
-async def approve(proposal_id: str):
+@app.post('/recommendations/{proposal_id}/receive', dependencies=[Depends(authorize)])
+async def receive(proposal_id: str):
     # One worker only in phase one. Crash during application leaves status applying:
     # never blindly replay an ambiguous receipt; inspect Medusa and audit it first.
     async with apply_lock:
         current = retrieve(proposal_id)
         if current['status'] == 'applied':
             return current
-        if current['status'] != 'proposed':
+        if current['status'] != 'approved':
             raise HTTPException(409, 'Receipt pending reconciliation; do not retry stock writes')
         proposal = current['proposal']
         with connect() as db:
             claimed = db.execute(
-                "UPDATE proposals SET status='applying' WHERE id=? AND status='proposed'",
+                "UPDATE proposals SET status='applying' WHERE id=? AND status='approved'",
                 (proposal_id,),
             ).rowcount
         if not claimed:
@@ -115,3 +115,31 @@ async def approve(proposal_id: str):
             db.execute('UPDATE proposals SET status=?, receipt=? WHERE id=?',
                        ('applied', json.dumps(receipt), proposal_id))
         return retrieve(proposal_id)
+
+
+def transition(proposal_id: str, allowed: tuple[str, ...], target: str):
+    with connect() as db:
+        placeholders = ','.join('?' for _ in allowed)
+        db.execute(
+            f'UPDATE proposals SET status=? WHERE id=? AND status IN ({placeholders})',
+            (target, proposal_id, *allowed),
+        )
+    current = retrieve(proposal_id)
+    if current['status'] != target:
+        raise HTTPException(409, 'Proposal state does not allow this action')
+    return current
+
+
+@app.post('/recommendations/{proposal_id}/approve', dependencies=[Depends(authorize)])
+def approve(proposal_id: str):
+    return transition(proposal_id, ('proposed',), 'approved')
+
+
+@app.post('/recommendations/{proposal_id}/reject', dependencies=[Depends(authorize)])
+def reject(proposal_id: str):
+    return transition(proposal_id, ('proposed',), 'rejected')
+
+
+@app.post('/recommendations/{proposal_id}/cancel', dependencies=[Depends(authorize)])
+def cancel(proposal_id: str):
+    return transition(proposal_id, ('proposed', 'approved'), 'cancelled')

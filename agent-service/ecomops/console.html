@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EcomOps 运营控制台</title>
+<style>
+body { font: 16px system-ui; max-width: 72rem; margin: 2rem auto; padding: 0 1rem; color: #18243a; }
+section { border: 1px solid #cdd5e3; padding: 1rem; margin: 1rem 0; border-radius: .6rem; }
+button, input { font: inherit; padding: .4rem; margin: .25rem; }
+pre { overflow: auto; background: #eef2f7; padding: 1rem; }
+</style>
+<h1>EcomOps 运营控制台</h1>
+<label>个人访问令牌 <input id="token" type="password" autocomplete="off"></label>
+<button id="login">验证身份</button><button id="logout">退出</button>
+<p id="status" role="status"></p>
+<section>
+<h2>经营概览</h2>
+<dl id="dashboard">
+<dt>统计窗口订单</dt><dd id="order-count">—</dd>
+<dt>上一周期订单</dt><dd id="previous-count">—</dd>
+<dt>当前检测到的异常</dt><dd id="alert-count">—</dd>
+</dl>
+</section>
+<section>
+<h2>库存与收货</h2>
+<label>预警阈值 <input id="threshold" type="number" min="1" max="1000" value="10"></label>
+<label>补货目标 <input id="target" type="number" min="2" max="10000" value="30"></label>
+<label>履约历史天数（可选）<input id="demand-window" type="number" min="7" max="180"></label>
+<label>补货提前期（天）<input id="lead-days" type="number" min="1" max="180" value="7"></label>
+<label>安全库存<input id="safety-stock" type="number" min="0" max="10000" value="5"></label>
+<button id="inventory">检查库存</button>
+<label>SKU <input id="sku"></label><label>仓库 ID <input id="location"></label>
+<button id="levels">实际库存</button><button id="trend">库存趋势</button>
+<label>提案 ID <input id="proposal"></label>
+<button id="approval">批准</button>
+<label>本批实收数量（留空表示全部剩余）<input id="receipt-quantity" type="number" min="1" max="10000"></label>
+<label>批次请求 ID <input id="receipt-id" placeholder="仅部分收货需要"></label>
+<button id="new-batch">生成新批次 ID</button><button id="receipt">确认收到商品</button>
+<button id="rejection">拒绝</button><button id="cancellation">取消</button>
+<label>实物与 Medusa 核对结果 <input id="reconcile-note" minlength="8" maxlength="500"></label>
+<label>核对结论 <select id="reconcile-outcome">
+<option value="unknown">仍不确定，继续暂停收货</option>
+<option value="received">确认已入库</option>
+<option value="not_received">确认未入库</option>
+</select></label>
+<button id="reconcile">记录人工核对</button>
+</section>
+<section>
+<h2>异常订单</h2>
+<label>履约 SLA（小时） <input id="sla-hours" type="number" min="1" max="720" value="24"></label>
+<button id="refresh">扫描并保存异常</button><button id="alerts">查看告警</button>
+<label>告警 ID <input id="alert"></label>
+<button id="acknowledge">确认告警</button><button id="ignore">忽略告警</button><button id="close-alert">关闭告警</button><button id="reopen">重新打开</button><button id="alert-history">处理历史</button>
+</section>
+<section>
+<h2>运营日报</h2>
+<label>日期 <input id="day" type="date"></label>
+<label>时区 <input id="zone" value="Asia/Shanghai"></label>
+<button id="preview">预览日报</button><button id="report">保存已完成日报</button><button id="history">历史日报</button><button id="saved-report">查看指定日报</button><button id="export">导出 CSV</button>
+</section>
+<section>
+<h2>运行状态和审计</h2>
+<button id="tasks">日报任务</button><button id="alert-task">订单扫描任务</button><button id="audit">操作审计</button>
+</section>
+<pre id="result" aria-label="操作结果"></pre>
+<script>
+const byId = id => document.getElementById(id);
+const value = id => byId(id).value.trim();
+const query = () => new URLSearchParams({day: value('day'), zone: value('zone')});
+async function request(path, method = 'GET', body) {
+  byId('status').textContent = '执行中…';
+  try {
+    const response = await fetch(path, {
+      method,
+      headers: {'Authorization': 'Bearer ' + value('token'), 'Content-Type': 'application/json'},
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const result = await response.json();
+    byId('result').textContent = JSON.stringify(result, null, 2);
+    if (response.ok && result.current && result.previous) {
+      byId('order-count').textContent = result.current.orders;
+      byId('previous-count').textContent = result.previous.orders;
+      byId('alert-count').textContent = result.snapshot ? result.snapshot.fulfillment_sla_alerts + result.snapshot.inventory_shortage_alerts : '—';
+    }
+    byId('status').textContent = response.ok ? '完成' : '请求失败 (' + response.status + ')';
+  } catch {
+    byId('status').textContent = '请求失败，请检查服务连接';
+  }
+}
+byId('login').onclick = () => request('/identity');
+byId('logout').onclick = () => {
+  byId('token').value = '';
+  byId('result').textContent = '';
+  byId('status').textContent = '已退出';
+};
+const proposal = action => request('/recommendations/' + encodeURIComponent(value('proposal')) + '/' + action, 'POST');
+const alertAction = status => request('/operations/orders/alerts/' + encodeURIComponent(value('alert')) + '/status', 'POST', {status});
+byId('inventory').onclick = () => {
+  const fields = ['threshold', 'target', 'demand-window', 'lead-days', 'safety-stock'];
+  if (!fields.every(id => byId(id).reportValidity())) return;
+  return request('/inventory/check', 'POST', {
+    threshold: Number(value('threshold')), target: Number(value('target')),
+    demand_window_days: value('demand-window') ? Number(value('demand-window')) : null,
+    lead_time_days: Number(value('lead-days')), safety_stock: Number(value('safety-stock')),
+  });
+};
+const inventoryQuery = () => {
+  const params = new URLSearchParams();
+  if (value('sku')) params.set('sku', value('sku'));
+  if (value('location')) params.set('location_id', value('location'));
+  return params;
+};
+byId('levels').onclick = () => request('/inventory/levels?' + inventoryQuery());
+byId('trend').onclick = () => request('/inventory/history?' + inventoryQuery());
+byId('approval').onclick = () => proposal('approve');
+byId('new-batch').onclick = () => { byId('receipt-id').value = crypto.randomUUID(); };
+byId('receipt').onclick = () => {
+  if (!byId('receipt-quantity').reportValidity()) return;
+  if (!confirm('确认商品已实际收到？')) return;
+  if (!value('receipt-quantity')) return proposal('receive');
+  if (!value('receipt-id')) byId('receipt-id').value = crypto.randomUUID();
+  return request('/recommendations/' + encodeURIComponent(value('proposal')) + '/receive',
+                 'POST', {request_id: value('receipt-id'), quantity: Number(value('receipt-quantity'))});
+};
+byId('rejection').onclick = () => proposal('reject');
+byId('cancellation').onclick = () => proposal('cancel');
+byId('reconcile').onclick = () => {
+  if (!byId('reconcile-note').reportValidity() || !confirm('确认已核对实物和 Medusa 库存记录？')) return;
+  return request('/recommendations/' + encodeURIComponent(value('proposal')) + '/reconcile',
+                 'POST', {note: value('reconcile-note'), outcome: value('reconcile-outcome')});
+};
+byId('refresh').onclick = () => {
+  if (!byId('sla-hours').reportValidity()) return;
+  return request('/operations/orders/alerts/refresh?sla_hours=' + encodeURIComponent(value('sla-hours')), 'POST');
+};
+byId('alert-history').onclick = () => request('/operations/orders/alerts/' + encodeURIComponent(value('alert')) + '/history');
+byId('alerts').onclick = () => request('/operations/orders/alerts/saved');
+byId('acknowledge').onclick = () => alertAction('acknowledged');
+byId('ignore').onclick = () => alertAction('ignored');
+byId('reopen').onclick = () => alertAction('open');
+byId('close-alert').onclick = () => alertAction('closed');
+byId('preview').onclick = () => request('/operations/reports/daily?' + query());
+byId('report').onclick = () => request('/operations/reports/daily?' + query(), 'POST');
+byId('saved-report').onclick = () => request('/operations/reports/history/' + encodeURIComponent(value('day')) + '?' + query());
+byId('export').onclick = async () => {
+  const path = '/operations/reports/history/' + encodeURIComponent(value('day')) + '/export?' + query();
+  try {
+    const response = await fetch(path, {headers: {'Authorization': 'Bearer ' + value('token')}});
+    if (!response.ok) throw new Error(String(response.status));
+    const objectUrl = URL.createObjectURL(await response.blob());
+    const download = document.createElement('a');
+    download.href = objectUrl;
+    download.download = 'ecomops-' + value('day') + '.csv';
+    download.click();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    byId('status').textContent = '完成';
+  } catch {
+    byId('status').textContent = '导出失败，请核对日期、时区和身份';
+  }
+};
+byId('history').onclick = () => request('/operations/reports/history');
+byId('tasks').onclick = () => request('/operations/tasks');
+byId('alert-task').onclick = () => request('/operations/orders/scan-status');
+byId('audit').onclick = () => request('/operations/audit');
+</script>
+</html>

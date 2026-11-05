@@ -1,0 +1,16 @@
+.git
+.github
+.runtime
+.venv
+**/.env
+**/.env.*
+**/.medusa
+**/.turbo
+**/__pycache__
+**/.pytest_cache
+**/node_modules
+**/dist
+**/build
+compose-evidence
+docs
+tests

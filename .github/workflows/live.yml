@@ -1,0 +1,59 @@
+name: EcomOps live regression
+on:
+  pull_request:
+  push:
+    branches: [feat/ecomops-operations]
+permissions:
+  contents: read
+jobs:
+  live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      ECOMOPS_ISOLATED_FIXTURES: '1'
+      ECOMOPS_MCP_REPORT_READ: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+          cache-dependency-path: commerce/package-lock.json
+      - name: Build and seed disposable services
+        run: |
+          mkdir -p ci-evidence
+          git rev-parse HEAD > ci-evidence/commit.txt
+          bash scripts/setup.sh 2>&1 | tee ci-evidence/setup.log
+          docker exec ecomops-postgres psql -U ecomops -d ecomops -Atc 'SHOW server_version' > ci-evidence/postgres-version.txt
+          grep -E '^17\.11([[:space:]]|$)' ci-evidence/postgres-version.txt
+        shell: bash
+      - name: Start real services
+        run: python3 scripts/services.py start
+      - name: Run unit and live integration tests
+        run: |
+          pg_password=$(python3 -c 'import json; print(json.load(open(".runtime/credentials.json"))["db_password"])')
+          echo "::add-mask::$pg_password"
+          export ECOMOPS_TEST_POSTGRES_URL="postgresql://ecomops:$pg_password@127.0.0.1:5432/ecomops"
+          python3 scripts/run-with-env.py .venv/bin/python -m pytest -q --junitxml=ci-evidence/pytest.xml
+          cp docs/evidence/phase1-live.json ci-evidence/live-flow.json
+      - name: Verify Medusa admin in Chromium
+        run: |
+          .venv/bin/playwright install --with-deps chromium
+          python3 scripts/run-with-env.py .venv/bin/python scripts/browser-check.py
+          cp docs/evidence/browser.json docs/evidence/admin-*.png ci-evidence/
+      - name: Verify operations console in Chromium
+        run: python3 scripts/run-with-env.py .venv/bin/python scripts/console-check.py | tee ci-evidence/console.json
+        shell: bash
+      - name: Measure seeded business workload
+        run: python3 scripts/run-with-env.py .venv/bin/python scripts/perf-check.py | tee ci-evidence/performance.json
+        shell: bash
+      - name: Upload current-run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ecomops-live-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-evidence/
+          retention-days: 14

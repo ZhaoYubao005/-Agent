@@ -1,7 +1,13 @@
 """Real stdio MCP tools over Medusa Admin APIs; no mock business data."""
 import os
+from datetime import date
+from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from mcp.server.mcpserver import MCPServer
+from ecomops.database import connect_read_only
 from ecomops.medusa import Medusa
+from ecomops.operations_store import get_report
 
 server = MCPServer('ecomops-commerce', version='0.1.0')
 medusa = Medusa()
@@ -14,8 +20,10 @@ async def list_products() -> list[dict]:
 
 
 @server.tool()
-async def list_orders() -> list[dict]:
-    """Read real orders from Medusa, including their item quantities."""
+async def list_orders(purpose: Literal['default', 'monitor', 'demand', 'ledger'] = 'default') -> list[dict]:
+    """Read real Medusa orders, with transaction postings for the ledger purpose."""
+    if purpose != 'default':
+        return await medusa.operational_orders(purpose)
     return await medusa.list_all('orders', 'orders')
 
 
@@ -26,30 +34,26 @@ async def list_inventory() -> list[dict]:
 
 
 @server.tool()
-async def replenish_inventory(inventory_item_id: str, location_id: str,
-                              quantity: int, expected_stocked: int) -> dict:
-    """Receive approved demo stock, rejecting stale snapshots. Development only."""
-    if os.environ.get('ECOMOPS_ALLOW_REPLENISHMENT') != '1':
-        raise ValueError('Stock writes are disabled')
-    if not 1 <= quantity <= 10000:
-        raise ValueError('quantity must be 1..10000')
-    item = await medusa.request('GET', f'/admin/inventory-items/{inventory_item_id}')
-    levels = item['inventory_item']['location_levels']
-    level = next((x for x in levels if x['location_id'] == location_id), None)
-    if level is None or int(level['stocked_quantity']) != expected_stocked:
-        raise ValueError('Stale inventory snapshot: run analysis again')
-    target = expected_stocked + quantity
-    await medusa.request('POST',
-        f'/admin/inventory-items/{inventory_item_id}/location-levels/{location_id}',
-        json={'stocked_quantity': target})
-    after = await medusa.request('GET', f'/admin/inventory-items/{inventory_item_id}')
-    verified = next(x for x in after['inventory_item']['location_levels']
-                    if x['location_id'] == location_id)
-    if int(verified['stocked_quantity']) != target:
-        raise RuntimeError('Inventory read-back did not match approved receipt')
-    return {'inventory_item_id': inventory_item_id, 'location_id': location_id,
-            'before_stocked': expected_stocked, 'after_stocked': target,
-            'available_quantity': int(verified['available_quantity'])}
+def read_daily_report(day: str, zone: str = 'UTC') -> dict:
+    """Read a saved aggregate report when the local service grants report access."""
+    if os.environ.get('ECOMOPS_MCP_REPORT_READ') != '1':
+        return {'status': 'forbidden'}
+    try:
+        day = date.fromisoformat(day).isoformat()
+        ZoneInfo(zone)
+    except (ValueError, ZoneInfoNotFoundError):
+        return {'status': 'invalid_date_or_zone'}
+
+    try:
+        with connect_read_only() as db:
+            report = get_report(db, day, zone)
+    except Exception:
+        # The driver error may carry private connection or file path details.
+        return {'status': 'unavailable'}
+    if report is None:
+        return {'status': 'not_found'}
+    return {key: report[key] for key in ('day', 'zone', 'generated_at', 'current', 'previous', 'snapshot')
+            if key in report}
 
 
 if __name__ == '__main__':

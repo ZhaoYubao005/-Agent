@@ -38,7 +38,7 @@ with httpx.Client(base_url='http://127.0.0.1:8100', trust_env=False, timeout=90)
 PY
 ```
 
-MCP 可独立运行：`python3 scripts/run-with-env.py .venv/bin/python mcp-server/server.py`。使用标准 stdio MCP 客户端；stdout 保留协议流，不添加调试 print。库存写入需 `ECOMOPS_ALLOW_REPLENISHMENT=1`，本地开发包装器明确开启。
+MCP 可独立运行：`python3 scripts/run-with-env.py .venv/bin/python mcp-server/server.py`。使用标准 stdio MCP 客户端；stdout 保留协议流，不添加调试 print。MCP 仅提供读工具。库存写入经 FastAPI 审批端点执行，并需 `ECOMOPS_ALLOW_REPLENISHMENT=1`，本地开发包装器明确开启。
 
 ## 本地凭据与安全
 

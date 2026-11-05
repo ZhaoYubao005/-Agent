@@ -1,0 +1,46 @@
+name: EcomOps real local LLM
+on:
+  pull_request:
+    paths:
+      - agent-service/ecomops/advice.py
+      - scripts/llm-check.py
+      - .github/workflows/llm.yml
+  push:
+    branches: [feat/ecomops-operations]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ollama:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: agent-service
+      ECOMOPS_LLM_URL: http://127.0.0.1:11434
+      ECOMOPS_LLM_MODEL: qwen2.5:0.5b
+      ECOMOPS_LLM_PROTOCOL: ollama
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Start local inference
+        run: |
+          mkdir -p llm-evidence
+          git rev-parse HEAD > llm-evidence/commit.txt
+          docker run -d --name ollama -e OLLAMA_NO_CLOUD=1 -p 127.0.0.1:11434:11434 ollama/ollama:0.12.11
+          docker inspect --format '{{.Image}}' ollama > llm-evidence/ollama-image.txt
+          curl --fail --retry 30 --retry-connrefused --retry-delay 1 http://127.0.0.1:11434/api/version > llm-evidence/ollama-version.json
+          docker exec ollama ollama pull "$ECOMOPS_LLM_MODEL"
+          docker exec ollama ollama list > llm-evidence/models.txt
+      - name: Execute real structured inference
+        shell: bash
+        run: |
+          python -m pip install -r requirements.lock
+          python scripts/llm-check.py | tee llm-evidence/advice.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ecomops-llm-${{ github.run_id }}-${{ github.run_attempt }}
+          path: llm-evidence/
+          retention-days: 14

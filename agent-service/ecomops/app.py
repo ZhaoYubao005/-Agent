@@ -5,12 +5,14 @@ import json
 import os
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, model_validator
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ecomops.graph import graph
+from ecomops.operations_graph import operations_graph
 from ecomops.receipts import replenish_inventory
 
 app = FastAPI(title='EcomOps Agent', version='0.1.0')
@@ -151,3 +153,25 @@ def reject(proposal_id: str):
 @app.post('/recommendations/{proposal_id}/cancel', dependencies=[Depends(authorize)])
 def cancel(proposal_id: str):
     return transition(proposal_id, ('proposed', 'approved'), 'cancelled')
+
+
+@app.get('/operations/orders/alerts', dependencies=[Depends(authorize)])
+async def order_alerts(sla_hours: int = Query(default=24, ge=1, le=720)):
+    state = await operations_graph.ainvoke({
+        'now': datetime.now(timezone.utc), 'sla_hours': sla_hours,
+    })
+    return state['result']
+
+
+@app.get('/operations/reports/daily', dependencies=[Depends(authorize)])
+async def daily_report(day: date, zone: str = Query(default='UTC', max_length=64)):
+    try:
+        ZoneInfo(zone)
+    except (ValueError, ZoneInfoNotFoundError):
+        raise HTTPException(422, 'Unknown IANA time zone')
+    if not date(1970, 1, 2) <= day <= date(9999, 12, 30):
+        raise HTTPException(422, 'Report date out of range')
+    state = await operations_graph.ainvoke({
+        'day': day, 'zone': zone, 'now': datetime.now(timezone.utc), 'sla_hours': 24,
+    })
+    return state['result']

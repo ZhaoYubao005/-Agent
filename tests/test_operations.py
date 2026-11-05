@@ -70,3 +70,20 @@ async def test_report_advice_uses_rules_without_provider(monkeypatch):
     advice = await interpret_report({'orders': 2, 'revenue': None}, {'orders': 1})
     assert advice['source'] == 'rules'
     assert advice['trace'] == 'provider_disabled'
+
+
+def test_role_permissions(monkeypatch):
+    import json
+    from fastapi.testclient import TestClient
+    from ecomops.app import app
+
+    monkeypatch.setenv('ECOMOPS_ACCOUNTS', json.dumps({
+        'read-only': {'role': 'viewer', 'token': 'fixture-viewer'},
+        'receiver': {'role': 'operator', 'token': 'fixture-operator'},
+        'approver': {'role': 'admin', 'token': 'fixture-admin'},
+    }))
+    client = TestClient(app)
+    path = '/recommendations/missing/approve'
+    assert client.post(path, headers={'Authorization': 'Bearer fixture-viewer'}).status_code == 403
+    assert client.post(path, headers={'Authorization': 'Bearer fixture-operator'}).status_code == 403
+    assert client.post(path, headers={'Authorization': 'Bearer fixture-admin'}).status_code == 404

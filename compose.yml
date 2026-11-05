@@ -5,8 +5,10 @@ services:
       POSTGRES_USER: ecomops
       POSTGRES_DB: ecomops
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      ECOMOPS_POSTGRES_PASSWORD:
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./docker/init-agent-postgres.sh:/docker-entrypoint-initdb.d/10-ecomops-agent.sh:ro
     healthcheck:
       test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "ecomops", "-d", "ecomops"]
       interval: 5s

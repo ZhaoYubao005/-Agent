@@ -32,7 +32,7 @@ jobs:
         run: |
           mkdir -p compose-evidence
           git rev-parse HEAD > compose-evidence/commit.txt
-          for key in POSTGRES_PASSWORD JWT_SECRET COOKIE_SECRET MEDUSA_ADMIN_PASSWORD ECOMOPS_API_TOKEN; do
+          for key in POSTGRES_PASSWORD ECOMOPS_POSTGRES_PASSWORD JWT_SECRET COOKIE_SECRET MEDUSA_ADMIN_PASSWORD ECOMOPS_API_TOKEN; do
             value=$(python -c 'from secrets import token_hex; print(token_hex(24))')
             echo "::add-mask::$value"
             echo "$key=$value" >> "$GITHUB_ENV"
@@ -40,7 +40,7 @@ jobs:
       - name: Build and start containers
         run: |
           umask 077
-          printf 'ECOMOPS_DATABASE_URL=postgresql://ecomops:%s@postgres:5432/ecomops?sslmode=disable\n' "$POSTGRES_PASSWORD" > .env
+          printf 'ECOMOPS_DATABASE_URL=postgresql://ecomops_agent:%s@postgres:5432/ecomops_agent?sslmode=disable\n' "$ECOMOPS_POSTGRES_PASSWORD" > .env
           docker compose config --quiet
           docker compose up --detach --build --wait --wait-timeout 240
           docker compose exec -T postgres psql -U ecomops -d ecomops -Atc 'SHOW server_version' > compose-evidence/postgres-version.txt
@@ -48,6 +48,30 @@ jobs:
           docker compose exec -T medusa node -p 'require("/app/commerce/node_modules/@medusajs/medusa/package.json").version' > compose-evidence/medusa-version.txt
           grep -x '2.22.3' compose-evidence/medusa-version.txt
           docker compose exec -T agent python -c 'import os; assert os.environ["ECOMOPS_CONTAINER_FIXTURES"] == "1"'
+      - name: Verify the Agent database login is isolated
+        run: |
+          docker compose exec -T agent python - <<'PY' | tee compose-evidence/database-permissions.txt
+          import os
+
+          import psycopg
+          from psycopg.conninfo import make_conninfo
+
+          url = os.environ['ECOMOPS_DATABASE_URL']
+          with psycopg.connect(url, connect_timeout=5) as db:
+              database, role = db.execute('SELECT current_database(), current_user').fetchone()
+              assert (database, role) == ('ecomops_agent', 'ecomops_agent')
+              flags = db.execute(
+                  'SELECT rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls '
+                  'FROM pg_roles WHERE rolname = current_user'
+              ).fetchone()
+              assert flags == (False, False, False, False, False)
+          try:
+              with psycopg.connect(make_conninfo(url, dbname='ecomops'), connect_timeout=5):
+                  raise AssertionError('Agent login reached the Medusa database')
+          except psycopg.OperationalError as error:
+              assert 'permission denied for database "ecomops"' in str(error)
+          print('Agent owns its operations database and cannot connect to the Medusa database.')
+          PY
       - name: Verify PostgreSQL operations schema, migration and concurrency
         run: |
           ECOMOPS_TEST_POSTGRES_URL="postgresql://ecomops:$POSTGRES_PASSWORD@postgres:5432/ecomops?sslmode=disable" \
@@ -112,9 +136,9 @@ jobs:
 
           asyncio.run(check())
           PY
-          docker compose exec -T postgres psql -U ecomops -d ecomops -Atc \
+          docker compose exec -T postgres psql -U ecomops -d ecomops_agent -Atc \
             "SELECT COUNT(*) >= 2 FROM ecomops_agent.proposals WHERE status = 'applied'" | grep -x t
-          docker compose exec -T postgres psql -U ecomops -d ecomops -Atc \
+          docker compose exec -T postgres psql -U ecomops -d ecomops_agent -Atc \
             "SELECT COUNT(*) >= 1 FROM ecomops_agent.daily_reports" | grep -x t
           echo 'Commerce fixtures, stock, Agent receipts and report survived container recreation in PostgreSQL.' > compose-evidence/persistence.txt
       - name: Verify the built Medusa admin in Chromium

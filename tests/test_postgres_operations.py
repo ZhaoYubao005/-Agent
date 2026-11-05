@@ -129,7 +129,7 @@ def test_sqlite_migration_preserves_rows_and_postgres_identities(postgres_databa
     original = source_path.read_bytes()
     assert migrate(source_path) == {
         'proposals': 1, 'receipt_batches': 0, 'audit_events': 1, 'inventory_observations': 0, 'order_alerts': 1,
-        'order_alert_events': 1, 'daily_reports': 0, 'report_jobs': 0,
+        'order_alert_events': 1, 'daily_reports': 0, 'report_jobs': 0, 'order_alert_scan_jobs': 0,
     }
     assert source_path.read_bytes() == original
     with pytest.raises(SystemExit, match='Target schema must be empty'):

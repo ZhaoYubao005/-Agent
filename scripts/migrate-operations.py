@@ -4,7 +4,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from ecomops.database import PostgresConnection, transaction
+from ecomops.database import PostgresConnection, repair_unresolved_receipts, transaction
 
 
 TABLES = {
@@ -15,6 +15,8 @@ TABLES = {
     'order_alerts': ('id', 'payload', 'status'),
     'order_alert_events': ('sequence', 'alert_id', 'status', 'occurred_at'),
     'daily_reports': ('day', 'zone', 'payload', 'generated_at'),
+    'order_alert_scan_jobs': ('id', 'claim', 'state', 'next_run_at', 'lease_until', 'started_at',
+                              'finished_at', 'failure_count', 'alert_count', 'error'),
     'report_jobs': ('day', 'zone', 'claim', 'state'),
 }
 
@@ -52,6 +54,7 @@ def migrate(source_path):
                                          (SELECT max(sequence) FROM {table}))""",
                         (f'ecomops_agent.{table}',),
                     )
+            repair_unresolved_receipts(target)
     finally:
         source.close()
     return counts

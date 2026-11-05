@@ -72,6 +72,9 @@ services:
       ECOMOPS_LLM_API_KEY:
       ECOMOPS_REPORT_ZONE:
       ECOMOPS_REPORT_HOUR:
+      ECOMOPS_REPORT_LOOKBACK_DAYS:
+      ECOMOPS_ALERT_SCAN_INTERVAL_SECONDS:
+      ECOMOPS_ALERT_SCAN_SLA_HOURS:
     volumes:
       - agent-data:/data
     ports:

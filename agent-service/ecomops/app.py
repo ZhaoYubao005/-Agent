@@ -6,7 +6,7 @@ import json
 import logging
 import uuid
 from uuid import UUID
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -14,6 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, model_validator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from ecomops.alert_scheduler import alert_scan_status, run_alert_schedule
 from ecomops.audit import record
 from ecomops.auth import Actor, administrator, authorize, operator
 from ecomops.database import claim_receipt, connect, transaction
@@ -28,13 +29,16 @@ from ecomops.workflow import run_graph
 
 @asynccontextmanager
 async def lifespan(app):
-    task = asyncio.create_task(run_schedule(connect, _generate_report))
+    tasks = (
+        asyncio.create_task(run_schedule(connect, _generate_report)),
+        asyncio.create_task(run_alert_schedule(connect, _scan_order_alerts)),
+    )
     try:
         yield
     finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 app = FastAPI(title='EcomOps Agent', version='0.1.0', lifespan=lifespan)
@@ -201,11 +205,10 @@ def transition(proposal_id: str, allowed: tuple[str, ...], target: str, actor: A
             (target, proposal_id, *allowed),
         ).rowcount
         if changed:
-            if target == 'reconciled':
+            if outcome is not None:
                 db.execute(
-                    "UPDATE receipt_batches SET status='reconciled', receipt=? "
-                    "WHERE proposal_id=? AND status='needs_review'",
-                    (json.dumps({'outcome': outcome}), proposal_id),
+                    "UPDATE receipt_batches SET status=?, receipt=? WHERE proposal_id=? AND status='needs_review'",
+                    (target, json.dumps({'outcome': outcome}), proposal_id),
                 )
             audit_note = f'Outcome {outcome}: {note}' if outcome is not None else note
             record(db, actor, target, proposal_id, audit_note)
@@ -236,6 +239,15 @@ async def order_alerts(sla_hours: int = Query(default=24, ge=1, le=720)):
         'now': datetime.now(timezone.utc), 'sla_hours': sla_hours,
     })
     return {**state['result'], 'trace': trace}
+
+
+async def _scan_order_alerts(sla_hours: int):
+    return (await order_alerts(sla_hours))['alerts']
+
+
+@app.get('/operations/orders/scan-status', dependencies=[Depends(authorize)])
+def order_scan_status():
+    return alert_scan_status(connect)
 
 
 @app.get('/operations/reports/daily', dependencies=[Depends(authorize)])
@@ -357,7 +369,8 @@ class Reconciliation(BaseModel):
 
 @app.post('/recommendations/{proposal_id}/reconcile')
 def reconcile(proposal_id: str, details: Reconciliation, actor: Actor = Depends(administrator)):
-    return transition(proposal_id, ('needs_review',), 'reconciled', actor, details.note, details.outcome)
+    target = 'needs_review' if details.outcome == 'unknown' else 'reconciled'
+    return transition(proposal_id, ('needs_review',), target, actor, details.note, details.outcome)
 
 
 @app.get('/operations/audit', dependencies=[Depends(administrator)])

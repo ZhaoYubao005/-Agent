@@ -20,18 +20,19 @@ def main():
     note = args.note.strip()
     if not 1 <= len(actor) <= 100 or not 8 <= len(note) <= 500:
         parser.error('Provide an actor and a reconciliation note between 8 and 500 characters')
+    target = 'needs_review' if args.outcome == 'unknown' else 'reconciled'
     with transaction() as db:
         changed = db.execute("""
-            UPDATE proposals SET status='reconciled'
+            UPDATE proposals SET status=?
             WHERE id=? AND status='applying'
-        """, (args.proposal_id,)).rowcount
+        """, (target, args.proposal_id)).rowcount
         if not changed:
             parser.error('Proposal is missing or not in the applying state')
         db.execute(
-            "UPDATE receipt_batches SET status='reconciled', receipt=? WHERE proposal_id=? AND status='applying'",
-            (json.dumps({'outcome': args.outcome}), args.proposal_id),
+            "UPDATE receipt_batches SET status=?, receipt=? WHERE proposal_id=? AND status='applying'",
+            (target, json.dumps({'outcome': args.outcome}), args.proposal_id),
         )
-        record(db, Actor(actor, 'maintenance'), 'reconciled', args.proposal_id, f'Outcome {args.outcome}: {note}')
+        record(db, Actor(actor, 'maintenance'), target, args.proposal_id, f'Outcome {args.outcome}: {note}')
     print('Reconciliation recorded.')
 
 

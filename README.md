@@ -103,3 +103,14 @@ LLM 默认关闭。配置 `ECOMOPS_LLM_PROTOCOL=ollama`、Ollama 主机 URL 和�
 对异常中断后遗留的 `applying` 记录，维护员停掉所有 Agent 写入实例，
 核对实物和 Medusa 后使用 `scripts/reconcile-receipt.py` 写入人工处置记录。
 该脚本只结束 Agent 的本地状态。实际差额需创建并批准独立的新提案。
+
+### 后台任务
+
+设置 `ECOMOPS_ALERT_SCAN_INTERVAL_SECONDS`（30–86400 秒）可让 Agent 定时扫描
+并保存订单告警。扫描通过现有 LangGraph 和只读 MCP 读取 Medusa，
+保存时保留人工处理状态。`ECOMOPS_ALERT_SCAN_SLA_HOURS` 默认 24 小时。
+控制台的「订单扫描任务」显示最近运行状态，配置留空或设为 0 时关闭后台扫描。
+
+日报调度会在重启后补跑最近到期且缺失的营业日。
+`ECOMOPS_REPORT_LOOKBACK_DAYS` 默认 3 天，可设为 1–7 天。
+已经保存的日报保留原快照。补跑日报的库存和异常概况标记为实际生成时的观察结果。

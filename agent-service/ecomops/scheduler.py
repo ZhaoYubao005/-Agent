@@ -1,4 +1,4 @@
-"""Run the most recently completed local business day on a bounded schedule."""
+"""Run local business reports with bounded recovery after an outage."""
 import asyncio
 import logging
 import os
@@ -23,24 +23,44 @@ async def run_schedule(connect, generate):
     try:
         ZoneInfo(zone or '')
         hour = int(hour or '')
-        if not 0 <= hour <= 23:
-            raise ValueError('Hour out of range')
+        lookback = int(os.environ.get('ECOMOPS_REPORT_LOOKBACK_DAYS') or '3')
+        if not 0 <= hour <= 23 or not 1 <= lookback <= 7:
+            raise ValueError('Report schedule out of range')
     except (ValueError, KeyError):
         logger.error('Invalid daily report scheduling configuration')
         return
     while True:
         try:
-            await run_tick(connect, generate, zone, hour)
+            await run_tick(connect, generate, zone, hour, lookback_days=lookback)
         except Exception as error:
             logger.warning('daily_report scheduler unavailable: %s', type(error).__name__)
         await asyncio.sleep(30)
 
 
-async def run_tick(connect, generate, zone, hour, now=None):
+async def run_tick(connect, generate, zone, hour, now=None, *, lookback_days=1):
+    from ecomops.operations_store import operations_db
+
     now = now or datetime.now(timezone.utc)
-    day = scheduled_day(now, zone, hour)
-    if day:
-        await execute_report_job(connect, generate, day, zone, now)
+    local = now.astimezone(ZoneInfo(zone))
+    newest = scheduled_day(now, zone, hour) or local.date() - timedelta(days=2)
+    oldest = newest - timedelta(days=lookback_days - 1)
+    bounds = (zone, oldest.isoformat(), newest.isoformat())
+    with operations_db(connect) as db:
+        db.execute("""
+            UPDATE report_jobs SET state='completed'
+            WHERE zone=? AND day BETWEEN ? AND ? AND state='running'
+              AND EXISTS (SELECT 1 FROM daily_reports
+                          WHERE daily_reports.day=report_jobs.day AND daily_reports.zone=report_jobs.zone)
+        """, bounds)
+        saved = {row['day'] for row in db.execute(
+            'SELECT day FROM daily_reports WHERE zone=? AND day BETWEEN ? AND ?', bounds,
+        )}
+    for offset in range(lookback_days):
+        day = newest - timedelta(days=offset)
+        if day.isoformat() not in saved:
+            result = await execute_report_job(connect, generate, day, zone, now)
+            if result is not None:
+                return
 
 
 async def execute_report_job(connect, generate, day, zone, now=None):

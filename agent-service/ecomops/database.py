@@ -99,10 +99,34 @@ def create_schema(db):
         day TEXT NOT NULL, zone TEXT NOT NULL, payload TEXT NOT NULL,
         generated_at TEXT NOT NULL, PRIMARY KEY (day, zone)
     )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS order_alert_scan_jobs (
+        id TEXT PRIMARY KEY, claim TEXT, state TEXT NOT NULL, next_run_at TEXT NOT NULL,
+        lease_until TEXT, started_at TEXT, finished_at TEXT, failure_count INTEGER NOT NULL,
+        alert_count INTEGER, error TEXT
+    )""")
     db.execute("""CREATE TABLE IF NOT EXISTS report_jobs (
         day TEXT NOT NULL, zone TEXT NOT NULL, claim TEXT NOT NULL,
         state TEXT NOT NULL, PRIMARY KEY (day, zone)
     )""")
+
+
+def repair_unresolved_receipts(db):
+    # Older deployments marked an explicitly unknown outcome as reconciled.
+    unknown = '{"outcome": "unknown"}'
+    params = (unknown,)
+    if db.execute(
+        "SELECT 1 FROM receipt_batches WHERE status='reconciled' AND receipt=? LIMIT 1", params,
+    ).fetchone() is None:
+        return
+    db.execute("""
+        UPDATE proposals SET status='needs_review' WHERE status='reconciled' AND id IN (
+            SELECT proposal_id FROM receipt_batches WHERE status='reconciled' AND receipt=?
+        )
+    """, params)
+    db.execute("""
+        UPDATE receipt_batches SET status='needs_review' WHERE status='reconciled' AND receipt=?
+          AND proposal_id IN (SELECT id FROM proposals WHERE status='needs_review')
+    """, params)
 
 
 def connect():
@@ -110,6 +134,7 @@ def connect():
     try:
         with db:
             create_schema(db)
+            repair_unresolved_receipts(db)
     except Exception:
         db.close()
         raise

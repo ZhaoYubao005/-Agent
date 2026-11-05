@@ -38,6 +38,11 @@ pre { overflow: auto; background: #eef2f7; padding: 1rem; }
 <button id="new-batch">生成新批次 ID</button><button id="receipt">确认收到商品</button>
 <button id="rejection">拒绝</button><button id="cancellation">取消</button>
 <label>实物与 Medusa 核对结果 <input id="reconcile-note" minlength="8" maxlength="500"></label>
+<label>核对结论 <select id="reconcile-outcome">
+<option value="unknown">仍不确定，继续暂停收货</option>
+<option value="received">确认已入库</option>
+<option value="not_received">确认未入库</option>
+</select></label>
 <button id="reconcile">记录人工核对</button>
 </section>
 <section>
@@ -55,7 +60,7 @@ pre { overflow: auto; background: #eef2f7; padding: 1rem; }
 </section>
 <section>
 <h2>运行状态和审计</h2>
-<button id="tasks">日报任务</button><button id="audit">操作审计</button>
+<button id="tasks">日报任务</button><button id="alert-task">订单扫描任务</button><button id="audit">操作审计</button>
 </section>
 <pre id="result" aria-label="操作结果"></pre>
 <script>
@@ -122,7 +127,7 @@ byId('cancellation').onclick = () => proposal('cancel');
 byId('reconcile').onclick = () => {
   if (!byId('reconcile-note').reportValidity() || !confirm('确认已核对实物和 Medusa 库存记录？')) return;
   return request('/recommendations/' + encodeURIComponent(value('proposal')) + '/reconcile',
-                 'POST', {note: value('reconcile-note')});
+                 'POST', {note: value('reconcile-note'), outcome: value('reconcile-outcome')});
 };
 byId('refresh').onclick = () => {
   if (!byId('sla-hours').reportValidity()) return;
@@ -155,6 +160,7 @@ byId('export').onclick = async () => {
 };
 byId('history').onclick = () => request('/operations/reports/history');
 byId('tasks').onclick = () => request('/operations/tasks');
+byId('alert-task').onclick = () => request('/operations/orders/scan-status');
 byId('audit').onclick = () => request('/operations/audit');
 </script>
 </html>

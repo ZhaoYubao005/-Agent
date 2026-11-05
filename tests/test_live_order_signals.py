@@ -9,6 +9,8 @@ import httpx
 import pytest
 
 from ecomops import app as agent_app
+from ecomops.alert_scheduler import run_alert_scan_tick
+from ecomops.database import connect
 from ecomops.medusa import Medusa
 from ecomops.receipts import _fixture_endpoint
 from ecomops.tools import call, commerce_tools
@@ -130,7 +132,9 @@ async def test_live_order_reservations_and_shortage(seeded_orders, agent_headers
 
 
 @pytest.mark.asyncio
-async def test_live_fulfillment_sla_with_controlled_clock(seeded_orders, agent_headers, monkeypatch):
+async def test_live_fulfillment_sla_with_controlled_clock(
+    seeded_orders, agent_headers, monkeypatch, tmp_path,
+):
     created = {order['id']: datetime.fromisoformat(order['created_at']) for order in seeded_orders}
     clock = max(created.values()) + timedelta(hours=2, minutes=1)
 
@@ -141,9 +145,21 @@ async def test_live_fulfillment_sla_with_controlled_clock(seeded_orders, agent_h
 
     # Keep the real ASGI route, graph, MCP process and Medusa data. Control only the clock.
     monkeypatch.setattr(agent_app, 'datetime', TestClock)
+    monkeypatch.delenv('ECOMOPS_DATABASE_URL', raising=False)
+    monkeypatch.setenv('ECOMOPS_AUDIT_DB', str(tmp_path / 'scheduled-alerts.db'))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=agent_app.app),
                                  base_url='http://test', headers=agent_headers) as agent:
         result = await read_alerts(agent)
+        assert await run_alert_scan_tick(connect, agent_app._scan_order_alerts, 60, 1, now=clock)
+        saved = await agent.get(f'{ALERTS}/saved')
+        assert saved.status_code == 200, saved.text
+        assert {row['id'] for row in saved.json()} == {row['id'] for row in result['alerts']}
+        assert all(row['status'] == 'open' for row in saved.json())
+        assert not await run_alert_scan_tick(connect, agent_app._scan_order_alerts, 60, 1, now=clock)
+        status = await agent.get('/operations/orders/scan-status')
+        assert status.status_code == 200, status.text
+        assert status.json()['last_run']['state'] == 'completed'
+        assert status.json()['last_run']['alert_count'] == len(result['alerts'])
     overdue = {row['order_id']: row for row in result['alerts'] if row['rule'] == 'fulfillment_sla'}
     assert set(overdue) == set(created)
     for order_id, alert in overdue.items():

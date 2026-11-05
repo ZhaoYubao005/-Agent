@@ -132,16 +132,28 @@ def test_legacy_unknown_reconciliation_restores_location_guard(monkeypatch, tmp_
             db.executemany('INSERT INTO proposals VALUES (?, ?, ?, ?, ?)', [
                 ('uncertain', 'r', payload, 'reconciled', None),
                 ('verified', 'r', payload, 'reconciled', None),
+                ('note_only', 'r', payload, 'reconciled', None),
+                ('latest_verified', 'r', payload, 'reconciled', None),
                 ('next', 'r', payload, 'approved', None),
             ])
             db.executemany('INSERT INTO receipt_batches VALUES (?, ?, ?, ?, ?)', [
                 ('uncertain', 'full', 5, 'reconciled', json.dumps({'outcome': 'unknown'})),
                 ('verified', 'full', 5, 'reconciled', json.dumps({'outcome': 'received'})),
             ])
+            db.executemany(
+                "INSERT INTO audit_events (actor, role, action, subject, note, occurred_at) "
+                "VALUES ('old', 'admin', 'reconciled', ?, ?, 'time')",
+                [
+                    ('note_only', 'Verified manually before outcome fields existed'),
+                    ('latest_verified', 'Originally recorded without a verified outcome'),
+                    ('latest_verified', 'Outcome received: Matched goods and stock ledger'),
+                ],
+            )
     finally:
         db.close()
 
     with transaction() as db:
         statuses = {row['id']: row['status'] for row in db.execute('SELECT id, status FROM proposals')}
-        assert statuses == {'uncertain': 'needs_review', 'verified': 'reconciled', 'next': 'approved'}
+        assert statuses == {'uncertain': 'needs_review', 'verified': 'reconciled', 'next': 'approved',
+                            'note_only': 'needs_review', 'latest_verified': 'reconciled'}
         assert claim_receipt(db, 'next', 'item', 'loc') == 0

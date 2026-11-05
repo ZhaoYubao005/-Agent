@@ -80,6 +80,8 @@ def create_schema(db):
         sequence {sequence} PRIMARY KEY, actor TEXT NOT NULL, role TEXT NOT NULL,
         action TEXT NOT NULL, subject TEXT NOT NULL, note TEXT, occurred_at TEXT NOT NULL
     )""")
+    db.execute("""CREATE INDEX IF NOT EXISTS audit_receipt_reconcile
+                  ON audit_events (subject, sequence DESC) WHERE action='reconciled'""")
     db.execute("""CREATE TABLE IF NOT EXISTS inventory_observations (
         inventory_item_id TEXT NOT NULL, location_id TEXT NOT NULL,
         observed_at TEXT NOT NULL, sku TEXT, stocked TEXT NOT NULL,
@@ -111,22 +113,28 @@ def create_schema(db):
 
 
 def repair_unresolved_receipts(db):
-    # Older deployments marked an explicitly unknown outcome as reconciled.
+    # Earlier versions could close a receipt without a verified disposition.
     unknown = '{"outcome": "unknown"}'
-    params = (unknown,)
-    if db.execute(
-        "SELECT 1 FROM receipt_batches WHERE status='reconciled' AND receipt=? LIMIT 1", params,
-    ).fetchone() is None:
-        return
-    db.execute("""
-        UPDATE proposals SET status='needs_review' WHERE status='reconciled' AND id IN (
-            SELECT proposal_id FROM receipt_batches WHERE status='reconciled' AND receipt=?
+    unresolved = """
+        SELECT p.id FROM proposals p WHERE p.status='reconciled' AND (
+            EXISTS (SELECT 1 FROM receipt_batches b
+                    WHERE b.proposal_id=p.id AND b.status='reconciled' AND b.receipt=?)
+            OR EXISTS (
+                SELECT 1 FROM audit_events a
+                WHERE a.sequence=(SELECT max(previous.sequence) FROM audit_events previous
+                                  WHERE previous.subject=p.id AND previous.action='reconciled')
+                  AND substr(COALESCE(a.note, ''), 1, length('Outcome received: ')) <> 'Outcome received: '
+                  AND substr(COALESCE(a.note, ''), 1, length('Outcome not_received: ')) <> 'Outcome not_received: '
+            )
         )
-    """, params)
+    """
+    if db.execute(f'{unresolved} LIMIT 1', (unknown,)).fetchone() is None:
+        return
+    db.execute(f"UPDATE proposals SET status='needs_review' WHERE id IN ({unresolved})", (unknown,))
     db.execute("""
         UPDATE receipt_batches SET status='needs_review' WHERE status='reconciled' AND receipt=?
           AND proposal_id IN (SELECT id FROM proposals WHERE status='needs_review')
-    """, params)
+    """, (unknown,))
 
 
 def connect():

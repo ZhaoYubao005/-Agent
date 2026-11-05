@@ -91,14 +91,22 @@ async def receive(proposal_id: str):
         proposal = current['proposal']
         with connect() as db:
             claimed = db.execute(
-                "UPDATE proposals SET status='applying' WHERE id=? AND status='approved'",
-                (proposal_id,),
+                """
+                UPDATE proposals SET status='applying'
+                WHERE id=? AND status='approved' AND NOT EXISTS (
+                    SELECT 1 FROM proposals AS pending
+                    WHERE pending.status IN ('applying', 'needs_review')
+                    AND json_extract(pending.payload, '$.inventory_item_id')=?
+                    AND json_extract(pending.payload, '$.location_id')=?
+                )
+                """,
+                (proposal_id, proposal['inventory_item_id'], proposal['location_id']),
             ).rowcount
         if not claimed:
             current = retrieve(proposal_id)
             if current['status'] == 'applied':
                 return current
-            raise HTTPException(409, 'Receipt already claimed')
+            raise HTTPException(409, 'Receipt already claimed or this stock location requires reconciliation')
         try:
             receipt = await replenish_inventory(
                 inventory_item_id=proposal['inventory_item_id'],

@@ -1,4 +1,5 @@
 """Requires running development services; touches ECOMOPS-* fixtures only."""
+import asyncio
 import json
 import os
 from datetime import datetime, timezone
@@ -60,12 +61,18 @@ async def test_real_api_mcp_langgraph_replenishment():
         receipts = []
         for proposal in proposals.values():
             base = f'/recommendations/{proposal["id"]}'
+            premature = await agent.post(f'{base}/receive', headers=headers)
+            assert premature.status_code == 409
             approval = await agent.post(f'{base}/approve', headers=headers)
             assert approval.status_code == 200, approval.text
             assert approval.json()['status'] == 'approved'
             assert approval.json()['receipt'] is None
             path = f'{base}/receive'
-            first = await agent.post(path, headers=headers)
+            first, concurrent = await asyncio.gather(
+                agent.post(path, headers=headers), agent.post(path, headers=headers),
+            )
+            assert concurrent.status_code == 200, concurrent.text
+            assert concurrent.json() == first.json()
             assert first.status_code == 200, first.text
             applied = first.json()
             assert applied['status'] == 'applied'
@@ -104,7 +111,7 @@ async def test_real_api_mcp_langgraph_replenishment():
         'final_demo_inventory': [{'sku': i['sku'], 'levels': i['location_levels']} for i in final_demo],
         'assertions': ['real_admin_api_reads', 'real_mcp_handshake_and_tool_calls', 'reserved_stock_in_policy',
                        'unauthorized_rejected', 'invalid_policy_rejected', 'approved_receipt_readback',
-                       'duplicate_approval_idempotent', 'stale_snapshot_rejected', 'alerts_cleared'],
+                       'unapproved_receipt_rejected', 'concurrent_receipt_idempotent', 'stale_snapshot_rejected', 'alerts_cleared'],
     }
     destination = Path(__file__).resolve().parents[1] / 'docs/evidence/phase1-live.json'
     destination.write_text(json.dumps(evidence, indent=2))

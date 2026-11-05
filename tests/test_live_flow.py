@@ -159,6 +159,7 @@ async def test_real_mcp_daily_report_and_history():
         assert exported.status_code == 200
         assert exported.headers['content-type'].startswith('text/csv')
         assert 'current,orders,' in exported.text
+        assert 'current,payment_ledger.status,' in exported.text
     if os.environ.get('ECOMOPS_MCP_REPORT_READ') == '1':
         async with commerce_tools() as session:
             aggregate = await call(session, 'read_daily_report', {'day': day.isoformat(), 'zone': 'UTC'})

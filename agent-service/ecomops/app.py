@@ -357,6 +357,12 @@ def export_report(day: date, zone: str = Query(default='UTC', max_length=64)):
                        'ordered_units_by_variant', 'order_value_by_currency'):
             for name, value in snapshot.get(metric, {}).items():
                 writer.writerow([period, f'{metric}.{name}', value])
+        ledger = snapshot.get('payment_ledger')
+        if ledger:
+            writer.writerow([period, 'payment_ledger.status', ledger['status']])
+            for currency, totals in (ledger['by_currency'] or {}).items():
+                for metric, value in totals.items():
+                    writer.writerow([period, f'payment_ledger.{currency}.{metric}', value])
     return Response(output.getvalue(), media_type='text/csv', headers={
         'Content-Disposition': f'attachment; filename="ecomops-{day.isoformat()}.csv"',
     })

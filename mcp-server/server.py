@@ -20,8 +20,8 @@ async def list_products() -> list[dict]:
 
 
 @server.tool()
-async def list_orders(purpose: Literal['default', 'monitor', 'demand'] = 'default') -> list[dict]:
-    """Read real orders from Medusa, including their item quantities."""
+async def list_orders(purpose: Literal['default', 'monitor', 'demand', 'ledger'] = 'default') -> list[dict]:
+    """Read real Medusa orders, with transaction postings for the ledger purpose."""
     if purpose != 'default':
         return await medusa.operational_orders(purpose)
     return await medusa.list_all('orders', 'orders')

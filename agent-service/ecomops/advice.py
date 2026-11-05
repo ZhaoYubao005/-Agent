@@ -38,7 +38,7 @@ async def interpret_report(current, previous, snapshot=None):
     if facts.get('fulfillment_sla_alerts'):
         allowed.append('review_fulfillment')
     if not facts['revenue_available']:
-        summary += ' Revenue is unavailable because payment and refund records are missing from this snapshot.'
+        summary += ' Revenue is unavailable because it requires independent financial records.'
         allowed.append('reconcile_payments')
     allowed.append('review_orders')
     fallback = {

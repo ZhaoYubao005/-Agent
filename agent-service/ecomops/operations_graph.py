@@ -1,4 +1,5 @@
 """MCP-backed order monitoring and reporting workflows."""
+import asyncio
 from datetime import date, datetime, timedelta
 from typing import TypedDict
 from zoneinfo import ZoneInfo
@@ -7,7 +8,8 @@ from langgraph.graph import END, START, StateGraph
 
 from ecomops.advice import interpret_report
 from ecomops.operations import amount, daily_metrics, shortage_alerts, sla_alerts
-from ecomops.tools import call, commerce_tools
+from ecomops.payment_ledger import posted_payment_totals
+from ecomops.tools import MCPUnavailable, call, commerce_tools
 
 
 class OperationsState(TypedDict, total=False):
@@ -17,14 +19,23 @@ class OperationsState(TypedDict, total=False):
     sla_hours: int
     orders: list[dict]
     inventory: list[dict]
+    ledger_orders: list[dict] | None
     result: dict
 
 
 async def read_snapshot(state):
+    ledger_orders = None
     async with commerce_tools() as session:
         orders = await call(session, 'list_orders', {'purpose': 'monitor'})
         inventory = await call(session, 'list_inventory')
-    return {'orders': orders, 'inventory': inventory}
+        if 'day' in state:
+            try:
+                async with asyncio.timeout(10):
+                    ledger_orders = await call(session, 'list_orders', {'purpose': 'ledger'})
+            except (MCPUnavailable, TimeoutError):
+                # The optional ledger must not suppress the core report.
+                pass
+    return {'orders': orders, 'inventory': inventory, 'ledger_orders': ledger_orders}
 
 
 async def analyze(state):
@@ -39,6 +50,14 @@ async def analyze(state):
     zone = ZoneInfo(state['zone'])
     current = daily_metrics(orders, day, zone)
     previous = daily_metrics(orders, day - timedelta(days=1), zone)
+    for metrics in (current, previous):
+        ledger = posted_payment_totals(state.get('ledger_orders'), metrics, state['now'])
+        metrics['payment_ledger'] = ledger
+        metrics['revenue_unavailable_reason'] = 'Recognized revenue requires independent financial records.'
+        metrics['refund_amount_unavailable_reason'] = (
+            'See payment_ledger for posted refunds by currency.'
+            if ledger['status'] == 'available' else ledger['reason']
+        )
     availability = [amount(level.get('available_quantity')) for item in inventory
                     for level in item.get('location_levels') or []]
     snapshot = {

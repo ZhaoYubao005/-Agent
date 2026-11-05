@@ -21,6 +21,10 @@ DEMAND_FIELDS = (
     'fulfillments.id', 'fulfillments.location_id', 'fulfillments.created_at', 'fulfillments.canceled_at',
     'fulfillments.items.inventory_item_id', 'fulfillments.items.quantity',
 )
+LEDGER_FIELDS = (
+    'id', 'transactions.id', 'transactions.reference', 'transactions.reference_id',
+    'transactions.created_at', 'transactions.currency_code', 'transactions.raw_amount', 'transactions.amount',
+)
 
 
 class Medusa:
@@ -77,6 +81,9 @@ class Medusa:
         raise RuntimeError('Snapshot exceeds 10000-record limit; refusing partial analysis')
 
     async def operational_orders(self, purpose):
+        if purpose == 'ledger':
+            orders = await self.list_all('orders', 'orders', {'fields': ','.join(LEDGER_FIELDS)})
+            return [{'id': order['id'], 'transactions': order.get('transactions')} for order in orders]
         extra_fields = {'monitor': MONITOR_FIELDS, 'demand': DEMAND_FIELDS}[purpose]
         orders = await self.list_all('orders', 'orders', {'fields': ','.join(ORDER_FIELDS + extra_fields)})
         if purpose != 'monitor':

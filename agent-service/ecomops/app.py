@@ -5,12 +5,13 @@ import io
 import json
 import logging
 import uuid
+from uuid import UUID
 from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, model_validator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ecomops.audit import record
@@ -18,11 +19,12 @@ from ecomops.auth import Actor, administrator, authorize, operator
 from ecomops.database import claim_receipt, connect, transaction
 from ecomops.graph import graph
 from ecomops.inventory_history import save_levels
-from ecomops.tools import call, commerce_tools
+from ecomops.tools import MCPUnavailable, call, commerce_tools
 from ecomops.operations_graph import operations_graph
 from ecomops import operations_store
 from ecomops.receipts import replenish_inventory
 from ecomops.scheduler import run_schedule
+from ecomops.workflow import run_graph
 
 @asynccontextmanager
 async def lifespan(app):
@@ -51,6 +53,11 @@ async def request_trace(request: Request, call_next):
     return response
 
 
+@app.exception_handler(MCPUnavailable)
+async def upstream_unavailable(request: Request, error: MCPUnavailable):
+    return JSONResponse(status_code=503, content={'detail': 'Commerce snapshot unavailable'})
+
+
 class Policy(BaseModel):
     threshold: int = Field(default=10, ge=1, le=1000)
     target: int = Field(default=30, ge=2, le=10000)
@@ -73,7 +80,7 @@ def health():
 
 @app.post('/inventory/check', dependencies=[Depends(operator)])
 async def check(policy: Policy, actor: Actor = Depends(operator)):
-    state = await graph.ainvoke({**policy.model_dump(), 'now': datetime.now(timezone.utc)})
+    state, trace = await run_graph(graph, {**policy.model_dump(), 'now': datetime.now(timezone.utc)})
     run_id = str(uuid.uuid4())
     result = []
     with transaction() as db:
@@ -87,7 +94,7 @@ async def check(policy: Policy, actor: Actor = Depends(operator)):
     return {'run_id': run_id, 'checked_at': datetime.now(timezone.utc).isoformat(),
             'policy': policy.model_dump(),
             'counts': {key: len(state[key]) for key in ['products', 'orders', 'inventory']},
-            'recommendations': result}
+            'recommendations': result, 'trace': trace, 'skipped_inventory_levels': state.get('skipped_inventory_levels', [])}
 
 
 @app.get('/recommendations/{proposal_id}', dependencies=[Depends(authorize)])
@@ -101,34 +108,54 @@ def retrieve(proposal_id: str):
             'receipt': json.loads(row['receipt']) if row['receipt'] else None}
 
 
-@app.post('/recommendations/{proposal_id}/receive', dependencies=[Depends(operator)])
-async def receive(proposal_id: str, actor: Actor = Depends(operator)):
-    # One worker only in phase one. Crash during application leaves status applying:
-    # never blindly replay an ambiguous receipt; inspect Medusa and audit it first.
+class ReceiptConfirmation(BaseModel):
+    request_id: UUID
+    quantity: int = Field(ge=1, le=10000, strict=True)
+
+
+@app.post('/recommendations/{proposal_id}/receive')
+async def receive(proposal_id: str, confirmation: ReceiptConfirmation | None = None,
+                  actor: Actor = Depends(operator)):
+    # A crash after the Medusa request leaves the proposal applying for manual reconciliation.
     async with apply_lock:
         current = retrieve(proposal_id)
-        if current['status'] == 'applied':
+        request_id = str(confirmation.request_id) if confirmation else 'full'
+        with transaction() as db:
+            batch = db.execute("""
+                SELECT quantity, status, receipt FROM receipt_batches
+                WHERE proposal_id=? AND request_id=?
+            """, (proposal_id, request_id)).fetchone()
+        if batch:
+            if confirmation and confirmation.quantity != batch['quantity']:
+                raise HTTPException(409, 'Receipt request ID was already used for a different quantity')
+            return {**current, 'status': batch['status'], 'receipt': json.loads(batch['receipt'])}
+        if current['status'] == 'applied' and not confirmation:
             return current
-        if current['status'] != 'approved':
-            raise HTTPException(409, 'Receipt pending reconciliation; do not retry stock writes')
+        if current['status'] not in {'approved', 'partially_received'}:
+            raise HTTPException(409, 'Proposal state does not allow receipt')
         proposal = current['proposal']
+        previous_receipt = current['receipt']
+        received = previous_receipt['received_quantity'] if previous_receipt else 0
+        remaining = proposal['quantity'] - received
+        quantity = confirmation.quantity if confirmation else remaining
+        if not 1 <= quantity <= remaining:
+            raise HTTPException(422, 'Received quantity exceeds the outstanding proposal quantity')
+        expected_stocked = previous_receipt['after_stocked'] if previous_receipt else proposal['expected_stocked']
         with transaction() as db:
             claimed = claim_receipt(
                 db, proposal_id, proposal['inventory_item_id'], proposal['location_id'],
+                current['status'], json.dumps(previous_receipt) if previous_receipt else None,
             )
             if claimed:
-                record(db, actor, 'applying', proposal_id)
+                record(db, actor, 'applying', proposal_id, f'Quantity: {quantity}')
         if not claimed:
-            current = retrieve(proposal_id)
-            if current['status'] == 'applied':
-                return current
             raise HTTPException(409, 'Receipt already claimed or this stock location requires reconciliation')
         try:
             receipt = await replenish_inventory(
                 inventory_item_id=proposal['inventory_item_id'],
                 location_id=proposal['location_id'],
-                quantity=proposal['quantity'],
-                expected_stocked=proposal['expected_stocked'],
+                quantity=quantity,
+                expected_stocked=expected_stocked,
                 expected_reserved=proposal['reserved_quantity'],
             )
         except Exception:
@@ -136,11 +163,17 @@ async def receive(proposal_id: str, actor: Actor = Depends(operator)):
                 db.execute('UPDATE proposals SET status=? WHERE id=?', ('needs_review', proposal_id))
                 record(db, actor, 'needs_review', proposal_id)
             raise HTTPException(409, 'Stock application failed or is uncertain; reconcile with Medusa')
+        receipt.update(batch_quantity=quantity, received_quantity=received + quantity,
+                       remaining_quantity=remaining - quantity)
+        target = 'applied' if receipt['remaining_quantity'] == 0 else 'partially_received'
+        payload = json.dumps(receipt)
         with transaction() as db:
             db.execute('UPDATE proposals SET status=?, receipt=? WHERE id=?',
-                       ('applied', json.dumps(receipt), proposal_id))
-            record(db, actor, 'applied', proposal_id)
-        return retrieve(proposal_id)
+                       (target, payload, proposal_id))
+            db.execute('INSERT INTO receipt_batches VALUES (?, ?, ?, ?, ?)',
+                       (proposal_id, request_id, quantity, target, payload))
+            record(db, actor, target, proposal_id, f'Quantity: {quantity}')
+        return {**current, 'status': target, 'receipt': receipt}
 
 
 def transition(proposal_id: str, allowed: tuple[str, ...], target: str, actor: Actor, note=None):
@@ -170,15 +203,15 @@ def reject(proposal_id: str, actor: Actor = Depends(administrator)):
 
 @app.post('/recommendations/{proposal_id}/cancel', dependencies=[Depends(operator)])
 def cancel(proposal_id: str, actor: Actor = Depends(operator)):
-    return transition(proposal_id, ('proposed', 'approved'), 'cancelled', actor)
+    return transition(proposal_id, ('proposed', 'approved', 'partially_received'), 'cancelled', actor)
 
 
 @app.get('/operations/orders/alerts', dependencies=[Depends(authorize)])
 async def order_alerts(sla_hours: int = Query(default=24, ge=1, le=720)):
-    state = await operations_graph.ainvoke({
+    state, trace = await run_graph(operations_graph, {
         'now': datetime.now(timezone.utc), 'sla_hours': sla_hours,
     })
-    return state['result']
+    return {**state['result'], 'trace': trace}
 
 
 @app.get('/operations/reports/daily', dependencies=[Depends(authorize)])
@@ -189,10 +222,10 @@ async def daily_report(day: date, zone: str = Query(default='UTC', max_length=64
         raise HTTPException(422, 'Unknown IANA time zone')
     if not date(1970, 1, 2) <= day <= date(9999, 12, 30):
         raise HTTPException(422, 'Report date out of range')
-    state = await operations_graph.ainvoke({
+    state, trace = await run_graph(operations_graph, {
         'day': day, 'zone': zone, 'now': datetime.now(timezone.utc), 'sla_hours': 24,
     })
-    return state['result']
+    return {**state['result'], 'trace': trace}
 
 
 class AlertAction(BaseModel):
@@ -279,6 +312,10 @@ def export_report(day: date, zone: str = Query(default='UTC', max_length=64)):
         for metric in ('period_start', 'period_end', 'orders', 'orders_missing_items',
                        'revenue_unavailable_reason'):
             writer.writerow([period, metric, snapshot[metric]])
+        for metric in ('statuses', 'fulfillment_statuses', 'payment_statuses',
+                       'ordered_units_by_variant', 'order_value_by_currency'):
+            for name, value in snapshot.get(metric, {}).items():
+                writer.writerow([period, f'{metric}.{name}', value])
     return Response(output.getvalue(), media_type='text/csv', headers={
         'Content-Disposition': f'attachment; filename="ecomops-{day.isoformat()}.csv"',
     })

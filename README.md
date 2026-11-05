@@ -52,3 +52,52 @@ wrapper therefore disables receipts by default. The isolated CI runner enables
 `ECOMOPS_ISOLATED_FIXTURES=1` for its disposable stack. The adapter limits these
 writes to the three seeded fixture SKUs. Keep fixture receipt mode disabled
 for shared or production Medusa instances.
+
+## EcomOps 运营控制台
+
+Agent 控制台位于 `http://127.0.0.1:8100/console`，Medusa 后台位于
+`http://127.0.0.1:9000/app`。浏览器中的个人访问令牌只保存在当前页面，
+由服务端识别账户及角色。以环境变量 `ECOMOPS_ACCOUNTS` 配置命名账户，
+值为 JSON 对象，账户条目包含 `role` 和 `token`。角色如下。
+
+- Viewer 查询库存、订单异常、日报、导出和任务。
+- Operator 创建补货提案、确认已批准的实物收货、处理告警和生成日报。
+- Admin 增加批准、拒绝、人工核对和查看操作审计的权限。
+- 未提供命名账户配置时，`ECOMOPS_API_TOKEN` 用于本机开发管理员。
+
+以 `docker compose up -d --build --wait --wait-timeout 240` 启动。
+配置字段见 [环境变量示例](.env.example)，其中的密码和令牌必须独立生成。
+Medusa 与 Agent 端口默认仅绑定本机。Compose 内部通过私有网络访问数据库，
+MCP 作为 Agent 启动的标准 stdio 子进程运行，无独立公开端口。
+
+`ECOMOPS_DATABASE_URL` 可启用 Agent 的 PostgreSQL `ecomops_agent` schema。
+SQLite 仍可用于单机。迁移时先停止 Agent 并制作离线 SQLite 备份，设置目标
+数据库连接串，再运行 `PYTHONPATH=agent-service python scripts/migrate-operations.py <备份文件>`。
+迁移以空 schema 为目标，并保留业务 ID、状态和审计顺序。PostgreSQL
+Agent 行为与 Medusa 商业数据库事务分开。
+
+每日指定时区及小时由 `ECOMOPS_REPORT_ZONE` 和 `ECOMOPS_REPORT_HOUR`
+控制，两个都未配置时调度关闭。调度器保存上一已完成营业日，
+按日期和时区去重。当天使用预览接口。历史快照保留生成时间，JSON 与 CSV
+导出可核对统计窗口。订单金额为订单口径，并按币种分开。净营收与退款金额
+缺少完整的支付与退款明细时显示不可用。库存与告警概况使用生成时的现场快照。
+
+LLM 默认关闭。配置 `ECOMOPS_LLM_PROTOCOL=ollama`、Ollama 主机 URL 和模型名
+可使用本地原生接口。配置 `ECOMOPS_LLM_PROTOCOL=openai`、带 `/v1` 的
+兼容 API 基址、模型名及服务端密钥可使用兼容 API。两种模式均校验 JSON
+结构，仅发送聚合数值。失败时仍生成确定性日报和来源标记。
+详见 [Ollama API](https://docs.ollama.com/api/chat) 和 [兼容 API](https://docs.ollama.com/api/openai-compatibility)。
+
+- [架构与边界](docs/architecture.md)
+- [教学交接和演示](docs/LEARNING_HANDOFF.md)
+- [实时回归](.github/workflows/live.yml)、[Compose 验收](.github/workflows/compose.yml)、
+  [真实本地模型验收](.github/workflows/llm.yml)
+
+共享环境禁用 Agent 入库。隔离演示须明确开启写入开关，且收货期间没有其他库存
+写入者。一个提案可以分批收货，每批请求 ID 只使用一次。若请求结果不确定，
+通过 Medusa 记录和实物盘点核对，由 Admin 记录核对结果后重新提出差额提案。
+若进程在收货中断，先停止可能仍在执行的实例，再处理遗留的 `applying` 状态。
+
+对异常中断后遗留的 `applying` 记录，维护员停掉所有 Agent 写入实例，
+核对实物和 Medusa 后使用 `scripts/reconcile-receipt.py` 写入人工处置记录。
+该脚本只结束 Agent 的本地状态。实际差额需创建并批准独立的新提案。

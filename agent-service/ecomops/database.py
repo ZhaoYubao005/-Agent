@@ -35,10 +35,12 @@ def open_db(read_only=False):
     url = os.environ.get('ECOMOPS_DATABASE_URL')
     if url:
         import psycopg
+        from psycopg import IsolationLevel
         from psycopg.rows import dict_row
 
         connection = psycopg.connect(url, row_factory=dict_row, connect_timeout=5,
                                      options='-c search_path=ecomops_agent,pg_catalog')
+        connection.isolation_level = IsolationLevel.READ_COMMITTED
         db = PostgresConnection(connection)
         if read_only:
             db.execute('SET TRANSACTION READ ONLY')
@@ -70,6 +72,10 @@ def create_schema(db):
         db.execute('CREATE SCHEMA IF NOT EXISTS ecomops_agent')
     db.execute('CREATE TABLE IF NOT EXISTS proposals '
                '(id TEXT PRIMARY KEY, run_id TEXT, payload TEXT, status TEXT, receipt TEXT)')
+    db.execute("""CREATE TABLE IF NOT EXISTS receipt_batches (
+        proposal_id TEXT NOT NULL, request_id TEXT NOT NULL, quantity INTEGER NOT NULL,
+        status TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY (proposal_id, request_id)
+    )""")
     db.execute(f"""CREATE TABLE IF NOT EXISTS audit_events (
         sequence {sequence} PRIMARY KEY, actor TEXT NOT NULL, role TEXT NOT NULL,
         action TEXT NOT NULL, subject TEXT NOT NULL, note TEXT, occurred_at TEXT NOT NULL
@@ -120,7 +126,7 @@ def transaction():
         db.close()
 
 
-def claim_receipt(db, proposal_id, item, location):
+def claim_receipt(db, proposal_id, item, location, status='approved', prior_receipt=None):
     if isinstance(db, PostgresConnection):
         db.execute('SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))', (item, location))
         item_sql = "pending.payload::jsonb->>'inventory_item_id'"
@@ -128,11 +134,16 @@ def claim_receipt(db, proposal_id, item, location):
     else:
         item_sql = "json_extract(pending.payload, '$.inventory_item_id')"
         location_sql = "json_extract(pending.payload, '$.location_id')"
+    prior_filter = 'receipt IS NULL' if prior_receipt is None else 'receipt=?'
+    parameters = [proposal_id, status]
+    if prior_receipt is not None:
+        parameters.append(prior_receipt)
+    parameters.extend([item, location])
     return db.execute(f"""
         UPDATE proposals SET status='applying'
-        WHERE id=? AND status='approved' AND NOT EXISTS (
+        WHERE id=? AND status=? AND {prior_filter} AND NOT EXISTS (
             SELECT 1 FROM proposals AS pending
             WHERE pending.status IN ('applying', 'needs_review')
             AND {item_sql}=? AND {location_sql}=?
         )
-    """, (proposal_id, item, location)).rowcount
+    """, parameters).rowcount

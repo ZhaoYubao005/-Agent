@@ -8,6 +8,7 @@ from ecomops.database import PostgresConnection, transaction
 
 
 TABLES = {
+    'receipt_batches': ('proposal_id', 'request_id', 'quantity', 'status', 'receipt'),
     'proposals': ('id', 'run_id', 'payload', 'status', 'receipt'),
     'audit_events': ('sequence', 'actor', 'role', 'action', 'subject', 'note', 'occurred_at'),
     'inventory_observations': ('inventory_item_id', 'location_id', 'observed_at', 'sku', 'stocked', 'reserved', 'available'),

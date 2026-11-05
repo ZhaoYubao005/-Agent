@@ -30,3 +30,31 @@ LangGraph 使用 `read_medusa_via_mcp → inventory_policy` 两个节点。MCP �
 第一阶段采用单个 Uvicorn worker、进程内锁和本地 SQLite。Medusa 的设置库存 API 不提供原子 compare-and-set；当前“读快照、比较、写入”不能消除其他进程在间隙修改库存的竞争。仅适用于受控演示，生产需在 Medusa 工作流中添加分布式锁、事务与幂等收货编号，再启用多实例和第三方库存写入。
 
 当前补货是虚构仓库的模拟收货，不是向供应商下单或付款。没有 LLM API 调用，也不需要外部模型密钥。
+
+## Operations V2 call paths
+
+```mermaid
+flowchart LR
+  Browser[Operations console] --> API[FastAPI role checks]
+  Scheduler[Daily scheduler] --> Graph[LangGraph workflows]
+  API --> Graph
+  Graph --> MCP[Read-only stdio MCP]
+  MCP --> Medusa[Medusa Admin API]
+  Medusa --> Commerce[(PostgreSQL commerce)]
+  Graph --> Model[Optional structured report advice]
+  API --> Ops[(Operations persistence)]
+  Scheduler --> Ops
+  API --> Receipt[Explicit approved receipt]
+  Receipt -->|Isolated fixtures only| Medusa
+```
+
+The Agent operations schema stores proposals, receipt batches, inventory observations,
+order alerts and events, daily reports, jobs and audit events. The default single-host
+database is SQLite. PostgreSQL uses a dedicated schema and advisory locks for receipt
+claims. Medusa owns commerce stock, reservations, orders and fulfillment data.
+
+The MCP surface consists of `list_products`, `list_orders`, `list_inventory` and
+`read_daily_report`. The latter requires the explicit local
+`ECOMOPS_MCP_REPORT_READ=1` service capability and returns saved aggregate data.
+Every business write goes through a role-checked FastAPI endpoint. Neither tool output
+nor model-generated advice is an approval credential.

@@ -27,6 +27,8 @@ def medusa(monkeypatch):
     monkeypatch.setenv('ECOMOPS_ALLOW_REPLENISHMENT', '1')
     monkeypatch.setenv('ECOMOPS_ISOLATED_FIXTURES', '1')
     monkeypatch.delenv('ECOMOPS_CONTAINER_FIXTURES', raising=False)
+    monkeypatch.delenv('ECOMOPS_STOCK_CAS_MODE', raising=False)
+    monkeypatch.delenv('ECOMOPS_STOCK_CAS_TOKEN', raising=False)
     monkeypatch.setenv('MEDUSA_URL', 'http://127.0.0.1:9000')
     request = AsyncMock(side_effect=[inventory(), inventory(32), inventory(32)])
     monkeypatch.setattr(receipts.Medusa, 'request', request)
@@ -123,3 +125,30 @@ def test_receipt_requires_consistent_readback_after_write(medusa, mutation):
     with pytest.raises(RuntimeError, match='read-back'):
         receive()
     assert [call.args[0] for call in medusa.await_args_list] == ['GET', 'POST', 'GET']
+
+
+def test_controlled_receipt_uses_single_protected_cas_call(monkeypatch, medusa):
+    monkeypatch.setenv('ECOMOPS_STOCK_CAS_MODE', 'controlled')
+    monkeypatch.setenv('ECOMOPS_STOCK_CAS_TOKEN', 'test-token-with-at-least-thirty-two-characters')
+    monkeypatch.delenv('ECOMOPS_ISOLATED_FIXTURES')
+    result = {
+        'inventory_item_id': ITEM_ID, 'location_id': LOCATION_ID, 'before_stocked': 5,
+        'after_stocked': 32, 'available_quantity': 30,
+    }
+    medusa.side_effect = [result]
+    assert receive(idempotency_key='proposal:batch') == result
+    medusa.assert_awaited_once_with(
+        'POST', '/admin/ecomops/inventory-receipts',
+        headers={'x-ecomops-receipt-token': 'test-token-with-at-least-thirty-two-characters'},
+        json={'idempotency_key': 'proposal:batch', 'inventory_item_id': ITEM_ID, 'location_id': LOCATION_ID,
+              'quantity': 27, 'expected_stocked': 5, 'expected_reserved': 2},
+    )
+
+
+def test_controlled_receipt_never_sends_token_to_external_host(monkeypatch, medusa):
+    monkeypatch.setenv('ECOMOPS_STOCK_CAS_MODE', 'controlled')
+    monkeypatch.setenv('ECOMOPS_STOCK_CAS_TOKEN', 'test-token-with-at-least-thirty-two-characters')
+    monkeypatch.setenv('MEDUSA_URL', 'https://stock.example.test')
+    with pytest.raises(ValueError, match='trusted local'):
+        receive(idempotency_key='proposal:batch')
+    medusa.assert_not_awaited()

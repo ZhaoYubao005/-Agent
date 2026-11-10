@@ -17,6 +17,7 @@ TABLES = {
     'daily_reports': ('day', 'zone', 'payload', 'generated_at'),
     'order_alert_scan_jobs': ('id', 'claim', 'state', 'next_run_at', 'lease_until', 'started_at',
                               'finished_at', 'failure_count', 'alert_count', 'error'),
+    'finance_records': ('kind', 'source_id', 'effective_at', 'payload', 'source_digest', 'imported_at'),
     'report_jobs': ('day', 'zone', 'claim', 'state'),
 }
 

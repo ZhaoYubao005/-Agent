@@ -49,8 +49,9 @@ class Medusa:
                 'password': os.environ['MEDUSA_ADMIN_PASSWORD'],
             })
             auth.raise_for_status()
-            response = await client.request(method, path, headers={
-                'Authorization': f'Bearer {auth.json()["token"]}'}, **kwargs)
+            headers = httpx.Headers(kwargs.pop('headers', {}))
+            headers['Authorization'] = f'Bearer {auth.json()["token"]}'
+            response = await client.request(method, path, headers=headers, **kwargs)
             response.raise_for_status()
             return response.json()
 

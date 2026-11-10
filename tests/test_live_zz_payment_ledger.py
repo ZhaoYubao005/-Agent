@@ -103,3 +103,32 @@ async def test_live_daily_payment_ledger_reconciles_to_manual_provider_records()
             assert amounts['refund_count'] == int(expected['refund'] > 0)
             assert current['revenue'] is None
             assert current['refund_amount'] is None
+
+        csv_headers = {'Content-Type': 'text/csv'}
+        bank_rows = ['event_id,event_type,reference_id,currency,gross,fee,net,posted_at']
+        for kind, posting in postings.items():
+            gross = Decimal(str(posting['amount']))
+            fee = Decimal('1.25') if kind == 'capture' else Decimal(0)
+            bank_rows.append(','.join(map(str, (
+                f"bank_{posting['reference_id']}", kind, posting['reference_id'], currency,
+                gross, fee, gross - fee, posting['created_at'],
+            ))))
+        bank_csv = '\n'.join(bank_rows) + '\n'
+        imported = await agent.post('/operations/finance/import/bank', content=bank_csv, headers=csv_headers)
+        assert imported.status_code == 200, imported.text
+        replay = await agent.post('/operations/finance/import/bank', content=bank_csv, headers=csv_headers)
+        assert replay.json()['duplicate_count'] == 2
+
+        for day, expected in expected_by_day.items():
+            revenue_csv = f'entry_id,date,currency,amount\nrecognized_{day},{day},{currency},14.20\n'
+            imported = await agent.post('/operations/finance/import/revenue', content=revenue_csv, headers=csv_headers)
+            assert imported.status_code == 200, imported.text
+            report = await agent.get('/operations/finance/reconciliation',
+                                     params={'day': day.isoformat(), 'zone': 'UTC'})
+            assert report.status_code == 200, report.text
+            finance = report.json()
+            bank = finance['bank_reconciliation']
+            assert bank['counts']['matched'] == int(expected['capture'] > 0) + int(expected['refund'] > 0)
+            fee = Decimal('1.25') if expected['capture'] else Decimal(0)
+            assert Decimal(bank['by_currency'][currency]['net']) == expected['capture'] - expected['refund'] - fee
+            assert Decimal(finance['recognized_revenue']['by_currency'][currency]['recognized_amount']) == Decimal('14.20')

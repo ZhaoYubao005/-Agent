@@ -101,6 +101,13 @@ def create_schema(db):
         day TEXT NOT NULL, zone TEXT NOT NULL, payload TEXT NOT NULL,
         generated_at TEXT NOT NULL, PRIMARY KEY (day, zone)
     )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS finance_records (
+        kind TEXT NOT NULL, source_id TEXT NOT NULL, effective_at TEXT NOT NULL,
+        payload TEXT NOT NULL, source_digest TEXT NOT NULL, imported_at TEXT NOT NULL,
+        PRIMARY KEY (kind, source_id)
+    )""")
+    db.execute("""CREATE INDEX IF NOT EXISTS finance_records_period
+                  ON finance_records (kind, effective_at, source_id)""")
     db.execute("""CREATE TABLE IF NOT EXISTS order_alert_scan_jobs (
         id TEXT PRIMARY KEY, claim TEXT, state TEXT NOT NULL, next_run_at TEXT NOT NULL,
         lease_until TEXT, started_at TEXT, finished_at TEXT, failure_count INTEGER NOT NULL,

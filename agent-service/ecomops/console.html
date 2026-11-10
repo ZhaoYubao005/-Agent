@@ -59,6 +59,14 @@ pre { overflow: auto; background: #eef2f7; padding: 1rem; }
 <button id="preview">预览日报</button><button id="report">保存已完成日报</button><button id="history">历史日报</button><button id="saved-report">查看指定日报</button><button id="export">导出 CSV</button>
 </section>
 <section>
+<h2>财务对账（管理员）</h2>
+<label>清算流水 CSV <input id="bank-csv" type="file" accept=".csv,text/csv"></label>
+<button id="import-bank">导入清算流水</button>
+<label>财务收入 CSV <input id="revenue-csv" type="file" accept=".csv,text/csv"></label>
+<button id="import-revenue">导入确认收入</button>
+<button id="finance-report">对账（使用日报日期与时区）</button>
+</section>
+<section>
 <h2>运行状态和审计</h2>
 <button id="tasks">日报任务</button><button id="alert-task">订单扫描任务</button><button id="audit">操作审计</button>
 </section>
@@ -67,13 +75,13 @@ pre { overflow: auto; background: #eef2f7; padding: 1rem; }
 const byId = id => document.getElementById(id);
 const value = id => byId(id).value.trim();
 const query = () => new URLSearchParams({day: value('day'), zone: value('zone')});
-async function request(path, method = 'GET', body) {
+async function request(path, method = 'GET', body, contentType = 'application/json') {
   byId('status').textContent = '执行中…';
   try {
     const response = await fetch(path, {
       method,
-      headers: {'Authorization': 'Bearer ' + value('token'), 'Content-Type': 'application/json'},
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: {'Authorization': 'Bearer ' + value('token'), 'Content-Type': contentType},
+      body: body === undefined || contentType !== 'application/json' ? body : JSON.stringify(body),
     });
     const result = await response.json();
     byId('result').textContent = JSON.stringify(result, null, 2);
@@ -90,6 +98,8 @@ async function request(path, method = 'GET', body) {
 byId('login').onclick = () => request('/identity');
 byId('logout').onclick = () => {
   byId('token').value = '';
+  byId('bank-csv').value = '';
+  byId('revenue-csv').value = '';
   byId('result').textContent = '';
   byId('status').textContent = '已退出';
 };
@@ -158,6 +168,22 @@ byId('export').onclick = async () => {
     byId('status').textContent = '导出失败，请核对日期、时区和身份';
   }
 };
+const importFinance = kind => {
+  const input = byId(kind + '-csv');
+  const file = input.files[0];
+  if (!file) {
+    byId('status').textContent = '请选择 CSV 文件';
+    return;
+  }
+  if (file.size > 1048576) {
+    byId('status').textContent = 'CSV 不能超过 1 MiB';
+    return;
+  }
+  return request('/operations/finance/import/' + kind, 'POST', file, 'text/csv');
+};
+byId('import-bank').onclick = () => importFinance('bank');
+byId('import-revenue').onclick = () => importFinance('revenue');
+byId('finance-report').onclick = () => request('/operations/finance/reconciliation?' + query());
 byId('history').onclick = () => request('/operations/reports/history');
 byId('tasks').onclick = () => request('/operations/tasks');
 byId('alert-task').onclick = () => request('/operations/orders/scan-status');

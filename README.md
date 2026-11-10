@@ -114,3 +114,45 @@ LLM 默认关闭。配置 `ECOMOPS_LLM_PROTOCOL=ollama`、Ollama 主机 URL 和�
 日报调度会在重启后补跑最近到期且缺失的营业日。
 `ECOMOPS_REPORT_LOOKBACK_DAYS` 默认 3 天，可设为 1–7 天。
 已经保存的日报保留原快照。补跑日报的库存和异常概况标记为实际生成时的观察结果。
+
+## 受控收货事务
+
+默认部署延续隔离演示收货。受控部署可启用 `ECOMOPS_STOCK_CAS_MODE=controlled`，
+配置专用 `ECOMOPS_STOCK_CAS_TOKEN` 和 Medusa 侧的 `ECOMOPS_STOCK_CAS_SCOPE`。
+Scope 是逗号分隔的 `inventory_item_id:location_id`，逐一列出允许写入的库位。
+在 Agent 上显式设置 `ECOMOPS_ALLOW_REPLENISHMENT=1`。专用令牌与 Medusa 管理认证都必须通过。
+Compose 的 Medusa 在启用时初始化收货回执表。非 Compose 部署先在 Medusa 目录执行
+`npx medusa exec ./src/scripts/setup-ecomops-stock-cas.ts`，再启动启用该入口的服务。
+
+Agent 将已批准提案的批次编号传给 Medusa。库存条件检查、增加账面量和保存回执在同一
+PostgreSQL 事务中完成。相同批次及参数返回原回执，参数冲突或账面量、预留量改变时拒绝。
+启用范围要求其他库存写入方采用协调的写入路径。Medusa 自带的绝对库存更新可以持旧值写回，
+因此普通共享部署保持关闭。默认 Medusa 锁只覆盖单进程。多进程协调还需要共享锁提供器，
+并管控所有受控库位的原生管理写入和数据库写入。
+
+## 独立财务对账
+
+管理员在控制台的「财务对账」导入两类 UTF-8 CSV，每份最多 1 MiB 和 5,000 条。
+也可通过 `POST /operations/finance/import/bank` 和 `POST /operations/finance/import/revenue`
+上传 `text/csv`。通过控制台或 `GET /operations/finance/reconciliation?day=2026-11-10&zone=Asia/Shanghai`
+查询。以下是约定的表头和虚构示例。
+
+```csv
+event_id,event_type,reference_id,currency,gross,fee,net,posted_at
+clearing_cap_001,capture,cap_fixture_001,EUR,20.00,1.25,18.75,2026-11-10T08:30:00Z
+clearing_ref_001,refund,ref_fixture_001,EUR,-3.25,0,-3.25,2026-11-10T08:35:00Z
+```
+
+```csv
+entry_id,date,currency,amount
+book_entry_001,2026-11-10,EUR,14.20
+```
+
+- 清算记录使用独立的交易级来源。`reference_id` 是 Medusa 的 capture 或 refund 引用。
+  `gross` 收款为正、退款为负，手续费非负，`net = gross - fee`。按币种的主单位填十进制金额。
+- 确认收入来自财务账目，按账目的会计日期、币种和确认金额填写。金额和清算流水分开汇总。
+- 每类来源 ID 在本部署内唯一。跨来源时给 ID 加稳定前缀。完全一致的记录重导会去重，
+  同一 ID 金额或其他字段有变化时整份回滚。审计保留操作者、摘要和新导入条数。
+- 清算按所选时区的入账日筛选，并使用引用对照跨日的 Medusa 交易。缺失、金额差异、
+  币种差异和重复引用均单独展示。报告只反映已导入的数据，未导入的日期显示不可用。
+  银行批量打款、汇兑和渠道原始格式需要先取得交易级明细并整理为上述格式。

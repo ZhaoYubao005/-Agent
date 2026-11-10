@@ -112,6 +112,8 @@ def test_postgres_receipt_claim_serializes_separate_connections(postgres_databas
 
 def test_sqlite_migration_preserves_rows_and_postgres_identities(postgres_database, tmp_path):
     actor = SimpleNamespace(name='fixture-operator', role='operator')
+    finance_payload = json.dumps({'entry_id': 'fixture-revenue', 'date': '2026-11-05',
+                                  'currency': 'eur', 'amount': '14.20'})
     source_path = tmp_path / 'legacy.sqlite3'
     source = sqlite3.connect(source_path)
     try:
@@ -121,6 +123,8 @@ def test_sqlite_migration_preserves_rows_and_postgres_identities(postgres_databa
             source.execute("INSERT INTO audit_events VALUES (50, 'old', 'admin', 'applied', 'old', NULL, 'time')")
             source.execute("INSERT INTO order_alerts VALUES ('legacy-alert', '{}', 'open')")
             source.execute("INSERT INTO order_alert_events VALUES (80, 'legacy-alert', 'open', 'time')")
+            source.execute('INSERT INTO finance_records VALUES (?, ?, ?, ?, ?, ?)',
+                           ('revenue', 'fixture-revenue', '2026-11-05', finance_payload, 'digest', 'time'))
     finally:
         source.close()
 
@@ -129,7 +133,7 @@ def test_sqlite_migration_preserves_rows_and_postgres_identities(postgres_databa
     original = source_path.read_bytes()
     assert migrate(source_path) == {
         'proposals': 1, 'receipt_batches': 0, 'audit_events': 1, 'inventory_observations': 0, 'order_alerts': 1,
-        'order_alert_events': 1, 'daily_reports': 0, 'report_jobs': 0, 'order_alert_scan_jobs': 0,
+        'order_alert_events': 1, 'daily_reports': 0, 'report_jobs': 0, 'order_alert_scan_jobs': 0, 'finance_records': 1,
     }
     assert source_path.read_bytes() == original
     with pytest.raises(SystemExit, match='Target schema must be empty'):
@@ -149,3 +153,6 @@ def test_sqlite_migration_preserves_rows_and_postgres_identities(postgres_databa
         assert db.execute('SELECT sequence, status FROM order_alert_events ORDER BY sequence').fetchall() == [
             {'sequence': 80, 'status': 'open'}, {'sequence': 81, 'status': 'acknowledged'},
         ]
+        assert db.execute('SELECT payload, source_digest FROM finance_records').fetchone() == {
+            'payload': finance_payload, 'source_digest': 'digest',
+        }

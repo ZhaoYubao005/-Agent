@@ -18,6 +18,7 @@ from ecomops.alert_scheduler import alert_scan_status, run_alert_schedule
 from ecomops.audit import record
 from ecomops.auth import Actor, administrator, authorize, operator
 from ecomops.database import claim_receipt, connect, transaction
+from ecomops.finance_api import router as finance_router
 from ecomops.graph import graph
 from ecomops.inventory_history import save_levels
 from ecomops.tools import MCPUnavailable, call, commerce_tools
@@ -42,6 +43,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title='EcomOps Agent', version='0.1.0', lifespan=lifespan)
+app.include_router(finance_router)
 apply_lock = asyncio.Lock()
 logger = logging.getLogger('ecomops.requests')
 
@@ -176,6 +178,7 @@ async def receive(proposal_id: str, confirmation: ReceiptConfirmation | None = N
                 quantity=quantity,
                 expected_stocked=expected_stocked,
                 expected_reserved=proposal['reserved_quantity'],
+                idempotency_key=f'{proposal_id}:{request_id}',
             )
         except Exception:
             with transaction() as db:

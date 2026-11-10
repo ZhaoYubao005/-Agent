@@ -1,4 +1,4 @@
-"""Approved stock receipts for isolated demo fixtures."""
+"""Approved stock receipts for isolated fixtures and controlled CAS deployments."""
 import os
 import re
 
@@ -7,6 +7,8 @@ from ecomops.medusa import Medusa
 
 _DEMO_SKUS = {'ECOMOPS-MUG', 'ECOMOPS-BAG', 'ECOMOPS-BOTTLE'}
 _IDENTIFIER = re.compile(r'[A-Za-z0-9_-]{1,255}')
+_RECEIPT_KEY = re.compile(r'[A-Za-z0-9_:-]{1,128}')
+_CAS_TOKEN = re.compile(r'[!-~]{32,256}')
 _LOOPBACK_URL = re.compile(r'https?://(?:127\.0\.0\.1|\[::1\])(?::([0-9]{1,5}))?/?')
 _MAX_SAFE_INTEGER = 2 ** 53 - 1
 
@@ -47,15 +49,25 @@ def _fixture_level(response: dict, item_id: str, location_id: str) -> tuple[str,
 
 
 def validate_receipt_environment():
-    if os.environ.get('ECOMOPS_ALLOW_REPLENISHMENT') != '1' or os.environ.get('ECOMOPS_ISOLATED_FIXTURES') != '1':
+    if os.environ.get('ECOMOPS_ALLOW_REPLENISHMENT') != '1':
+        raise ValueError('Stock writes are disabled')
+    mode = os.environ.get('ECOMOPS_STOCK_CAS_MODE', '')
+    if mode == 'controlled':
+        if not _CAS_TOKEN.fullmatch(os.environ.get('ECOMOPS_STOCK_CAS_TOKEN', '')):
+            raise ValueError('Controlled stock receipt credential is unavailable')
+        if not _fixture_endpoint(Medusa().url):
+            raise ValueError('Controlled stock receipts require a trusted local Medusa endpoint')
+        return
+    if mode or os.environ.get('ECOMOPS_ISOLATED_FIXTURES') != '1':
         raise ValueError('Stock writes are disabled')
     if not _fixture_endpoint(Medusa().url):
         raise ValueError('Stock receipts require a local fixture Medusa endpoint')
 
 
 async def replenish_inventory(inventory_item_id: str, location_id: str,
-                              quantity: int, expected_stocked: int, expected_reserved: int) -> dict:
-    """Receive approved demo stock in an environment with exclusive fixture writes."""
+                              quantity: int, expected_stocked: int, expected_reserved: int,
+                              idempotency_key: str | None = None) -> dict:
+    """Receive approved stock within the configured writer boundary."""
     validate_receipt_environment()
     if not all(isinstance(value, str) and _IDENTIFIER.fullmatch(value)
                for value in (inventory_item_id, location_id)):
@@ -69,6 +81,26 @@ async def replenish_inventory(inventory_item_id: str, location_id: str,
         raise ValueError('Receipt exceeds the safe integer range')
 
     medusa = Medusa()
+    if os.environ.get('ECOMOPS_STOCK_CAS_MODE') == 'controlled':
+        if not idempotency_key or not _RECEIPT_KEY.fullmatch(idempotency_key):
+            raise ValueError('A valid controlled receipt key is required')
+        receipt = await medusa.request(
+            'POST', '/admin/ecomops/inventory-receipts',
+            headers={'x-ecomops-receipt-token': os.environ['ECOMOPS_STOCK_CAS_TOKEN']},
+            json={
+                'idempotency_key': idempotency_key, 'inventory_item_id': inventory_item_id,
+                'location_id': location_id, 'quantity': quantity,
+                'expected_stocked': expected_stocked, 'expected_reserved': expected_reserved,
+            },
+        )
+        expected = {
+            'inventory_item_id': inventory_item_id, 'location_id': location_id,
+            'before_stocked': expected_stocked, 'after_stocked': target,
+            'available_quantity': target - expected_reserved,
+        }
+        if receipt != expected:
+            raise RuntimeError('Controlled receipt response did not match the approved receipt')
+        return receipt
     item_path = f'/admin/inventory-items/{inventory_item_id}'
     before = await medusa.request('GET', item_path)
     sku, level = _fixture_level(before, inventory_item_id, location_id)

@@ -30,6 +30,20 @@ jobs:
           docker exec ecomops-postgres psql -U ecomops -d ecomops -Atc 'SHOW server_version' > ci-evidence/postgres-version.txt
           grep -E '^17\.11([[:space:]]|$)' ci-evidence/postgres-version.txt
         shell: bash
+      - name: Enable atomic receipts on the disposable fixture scope
+        shell: bash
+        run: |
+          scope=$(docker exec ecomops-postgres psql -U ecomops -d ecomops -Atc "SELECT string_agg(l.inventory_item_id || ':' || l.location_id, ',' ORDER BY i.sku) FROM inventory_level l JOIN inventory_item i ON i.id=l.inventory_item_id WHERE i.sku IN ('ECOMOPS-MUG','ECOMOPS-BAG','ECOMOPS-BOTTLE') AND i.deleted_at IS NULL AND l.deleted_at IS NULL")
+          test "$(tr ',' '\n' <<< "$scope" | grep -c ':')" -eq 3
+          token=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+          echo "::add-mask::$token"
+          export ECOMOPS_STOCK_CAS_MODE=controlled ECOMOPS_STOCK_CAS_TOKEN="$token" ECOMOPS_STOCK_CAS_SCOPE="$scope"
+          (cd commerce/apps/backend && MEDUSA_TELEMETRY_DISABLED=1 npx medusa exec ./src/scripts/setup-ecomops-stock-cas.ts)
+          {
+            echo 'ECOMOPS_STOCK_CAS_MODE=controlled'
+            echo "ECOMOPS_STOCK_CAS_TOKEN=$token"
+            echo "ECOMOPS_STOCK_CAS_SCOPE=$scope"
+          } >> "$GITHUB_ENV"
       - name: Start real services
         run: python3 scripts/services.py start
       - name: Run unit and live integration tests

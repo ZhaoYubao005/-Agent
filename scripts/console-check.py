@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+from datetime import datetime, timezone
 from time import perf_counter
 
 from playwright.async_api import async_playwright, expect
@@ -43,11 +44,15 @@ async def main():
         await operation('refresh', '/operations/orders/alerts/refresh')
         await operation('alerts', '/operations/orders/alerts/saved')
         assert await operation('history', '/operations/reports/history')
+        await page.locator('#day').fill(datetime.now(timezone.utc).date().isoformat())
+        await page.locator('#zone').fill('UTC')
+        finance = await operation('finance-report', '/operations/finance/reconciliation')
+        assert finance['scope'] == 'imported_records_only'
         audit = await operation('audit', '/operations/audit')
         assert {'approved', 'applied'} <= {row['action'] for row in audit if row['subject'] == bag['id']}
         assert not errors, errors
         print(json.dumps({'inventory': True, 'approved_and_received': True, 'alerts': True,
-                          'report_history': True, 'audit': True, 'latency_ms': latencies, 'errors': errors}))
+                          'report_history': True, 'finance_reconciliation': True, 'audit': True, 'latency_ms': latencies, 'errors': errors}))
         await browser.close()
 
 

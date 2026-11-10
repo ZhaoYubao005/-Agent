@@ -75,7 +75,16 @@ pre { overflow: auto; background: #eef2f7; padding: 1rem; }
 const byId = id => document.getElementById(id);
 const value = id => byId(id).value.trim();
 const query = () => new URLSearchParams({day: value('day'), zone: value('zone')});
+let requestGeneration = 0;
+function invalidateSessionResults() {
+  requestGeneration += 1;
+  byId('result').textContent = '';
+  for (const id of ['order-count', 'previous-count', 'alert-count']) byId(id).textContent = '—';
+  byId('status').textContent = '';
+}
+byId('token').addEventListener('input', invalidateSessionResults);
 async function request(path, method = 'GET', body, contentType = 'application/json') {
+  const generation = ++requestGeneration;
   byId('status').textContent = '执行中…';
   try {
     const response = await fetch(path, {
@@ -84,6 +93,7 @@ async function request(path, method = 'GET', body, contentType = 'application/js
       body: body === undefined || contentType !== 'application/json' ? body : JSON.stringify(body),
     });
     const result = await response.json();
+    if (generation !== requestGeneration) return;
     byId('result').textContent = JSON.stringify(result, null, 2);
     if (response.ok && result.current && result.previous) {
       byId('order-count').textContent = result.current.orders;
@@ -92,15 +102,15 @@ async function request(path, method = 'GET', body, contentType = 'application/js
     }
     byId('status').textContent = response.ok ? '完成' : '请求失败 (' + response.status + ')';
   } catch {
-    byId('status').textContent = '请求失败，请检查服务连接';
+    if (generation === requestGeneration) byId('status').textContent = '请求失败，请检查服务连接';
   }
 }
 byId('login').onclick = () => request('/identity');
 byId('logout').onclick = () => {
+  invalidateSessionResults();
   byId('token').value = '';
   byId('bank-csv').value = '';
   byId('revenue-csv').value = '';
-  byId('result').textContent = '';
   byId('status').textContent = '已退出';
 };
 const proposal = action => request('/recommendations/' + encodeURIComponent(value('proposal')) + '/' + action, 'POST');
@@ -153,11 +163,14 @@ byId('preview').onclick = () => request('/operations/reports/daily?' + query());
 byId('report').onclick = () => request('/operations/reports/daily?' + query(), 'POST');
 byId('saved-report').onclick = () => request('/operations/reports/history/' + encodeURIComponent(value('day')) + '?' + query());
 byId('export').onclick = async () => {
+  const generation = ++requestGeneration;
   const path = '/operations/reports/history/' + encodeURIComponent(value('day')) + '/export?' + query();
   try {
     const response = await fetch(path, {headers: {'Authorization': 'Bearer ' + value('token')}});
     if (!response.ok) throw new Error(String(response.status));
-    const objectUrl = URL.createObjectURL(await response.blob());
+    const blob = await response.blob();
+    if (generation !== requestGeneration) return;
+    const objectUrl = URL.createObjectURL(blob);
     const download = document.createElement('a');
     download.href = objectUrl;
     download.download = 'ecomops-' + value('day') + '.csv';
@@ -165,7 +178,7 @@ byId('export').onclick = async () => {
     setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
     byId('status').textContent = '完成';
   } catch {
-    byId('status').textContent = '导出失败，请核对日期、时区和身份';
+    if (generation === requestGeneration) byId('status').textContent = '导出失败，请核对日期、时区和身份';
   }
 };
 const importFinance = kind => {

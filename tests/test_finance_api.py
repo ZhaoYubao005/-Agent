@@ -1,5 +1,6 @@
 """Access, persistence, and evidence separation for the finance API."""
 import json
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
@@ -58,6 +59,13 @@ def test_imports_are_authorized_and_transactional(monkeypatch, tmp_path):
 def test_report_keeps_bank_net_and_recognized_amount_separate(monkeypatch, tmp_path):
     admin, _ = clients(monkeypatch, tmp_path)
 
+    class ReportClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 10, 12, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(finance_api, 'datetime', ReportClock)
+
     async def postings():
         return [{'id': 'order_1', 'transactions': [{
             'id': 'ordtrans_1', 'reference': 'capture', 'reference_id': 'cap_1',
@@ -71,10 +79,13 @@ def test_report_keeps_bank_net_and_recognized_amount_separate(monkeypatch, tmp_p
     assert empty.json()['recognized_revenue']['status'] == 'unavailable'
     assert admin.post(BANK_URL, content=BANK, headers=CSV).status_code == 200
     assert admin.post(REVENUE_URL, content=REVENUE, headers=CSV).status_code == 200
+    future = BANK.replace('bank_1', 'future').replace('cap_1', 'cap_future').replace('T00:30:00Z', 'T12:30:00Z')
+    assert admin.post(BANK_URL, content=future, headers=CSV).status_code == 200
     report = admin.get(REPORT_URL)
     assert report.status_code == 200, report.text
     assert report.headers['cache-control'] == 'no-store'
     data = report.json()
     assert data['bank_reconciliation']['counts']['matched'] == 1
+    assert data['bank_reconciliation']['counts']['bank_only'] == 0
     assert data['bank_reconciliation']['by_currency']['eur']['net'] == '18.75'
     assert data['recognized_revenue']['by_currency']['eur']['recognized_amount'] == '14.00'

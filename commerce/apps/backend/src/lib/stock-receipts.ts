@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto"
 import type { MedusaContainer } from "@medusajs/framework"
 import type { Knex } from "@medusajs/framework/mikro-orm/knex"
-import { BigNumber, ContainerRegistrationKeys, MathBN, Modules } from "@medusajs/framework/utils"
+import { BigNumber, ContainerRegistrationKeys, MathBN, MedusaError, Modules } from "@medusajs/framework/utils"
 import { z } from "@medusajs/framework/zod"
 
 export const stockReceiptJournal = "ecomops_stock_receipt"
@@ -125,7 +125,7 @@ async function applyReceipt(tx: Knex.Transaction, input: ReceiptInput): Promise<
   if (rowsUpdated.length !== 1 || !verified
       || readQuantity(verified.stocked_quantity, verified.raw_stocked_quantity) !== target
       || readQuantity(verified.reserved_quantity, verified.raw_reserved_quantity) !== reserved) {
-    throw new Error("Inventory receipt read-back failed")
+    throw new MedusaError(MedusaError.Types.UNEXPECTED_STATE, "Inventory receipt read-back failed")
   }
 
   return { status: 200, body: {
@@ -155,7 +155,7 @@ export async function receiveStock(container: MedusaContainer, input: ReceiptInp
       const recorded = await tx<JournalEntry>(stockReceiptJournal)
         .where("idempotency_key", input.idempotency_key).first()
       if (!recorded?.outcome) {
-        throw new Error("Inventory receipt journal entry is incomplete")
+        throw new MedusaError(MedusaError.Types.UNEXPECTED_STATE, "Inventory receipt journal entry is incomplete")
       }
       return recorded.fingerprint === fingerprint
         ? recorded.outcome
@@ -166,7 +166,7 @@ export async function receiveStock(container: MedusaContainer, input: ReceiptInp
     const saved = await tx<JournalEntry>(stockReceiptJournal).where("idempotency_key", input.idempotency_key)
       .update({ outcome }).returning("idempotency_key")
     if (saved.length !== 1) {
-      throw new Error("Inventory receipt journal update failed")
+      throw new MedusaError(MedusaError.Types.UNEXPECTED_STATE, "Inventory receipt journal update failed")
     }
     return outcome
   }, { isolationLevel: "read committed" }))

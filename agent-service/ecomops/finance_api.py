@@ -90,7 +90,7 @@ async def import_finance(kind: Kind, request: Request, response: Response,
     return {'kind': kind, 'sha256': digest, 'imported_count': created, 'duplicate_count': len(rows) - created}
 
 
-def read_period(start, end, day):
+def read_period(start, end, day, as_of):
     def read(db, kind, lower, upper, model):
         rows = db.execute("""
             SELECT payload FROM finance_records WHERE kind=? AND effective_at>=? AND effective_at<?
@@ -101,7 +101,9 @@ def read_period(start, end, day):
         return [model.model_validate_json(row['payload']) for row in rows]
 
     with transaction() as db:
-        bank = read(db, 'bank', utc_key(start), utc_key(end), BankSettlement)
+        # Preserve the half-open day window and include postings exactly at the cutoff.
+        bank_end = min(end, as_of + timedelta(microseconds=1))
+        bank = read(db, 'bank', utc_key(start), utc_key(bank_end), BankSettlement)
         revenue = read(db, 'revenue', day.isoformat(), (day + timedelta(days=1)).isoformat(), RevenueEntry)
     return bank, revenue
 
@@ -125,9 +127,9 @@ async def finance_report(day: date, response: Response, zone: str = Query('UTC',
         raise HTTPException(422, 'Unknown IANA time zone') from None
     start = datetime.combine(day, time.min, local_zone).astimezone(timezone.utc)
     end = datetime.combine(day + timedelta(days=1), time.min, local_zone).astimezone(timezone.utc)
-    bank, revenue = await run_in_threadpool(read_period, start, end, day)
-    ledger = await fetch_medusa_ledger()
     as_of = datetime.now(timezone.utc)
+    bank, revenue = await run_in_threadpool(read_period, start, end, day, as_of)
+    ledger = await fetch_medusa_ledger()
     medusa = select_medusa_transactions(
         ledger, start=start, end=end, bank_refs={(row.event_type, row.reference_id) for row in bank},
         as_of=as_of,

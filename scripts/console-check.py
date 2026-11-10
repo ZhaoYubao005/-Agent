@@ -50,9 +50,29 @@ async def main():
         assert finance['scope'] == 'imported_records_only'
         audit = await operation('audit', '/operations/audit')
         assert {'approved', 'applied'} <= {row['action'] for row in audit if row['subject'] == bag['id']}
+        # Delay a financial response until after logout to exercise the display boundary.
+        await page.evaluate("""() => {
+            window.fetch = () => new Promise(resolve => {
+                window.completeFinanceResponse = () => resolve({
+                    ok: true,
+                    json: async () => {
+                        window.financeResponseRead = true;
+                        return {sensitive_marker: 'fixture'};
+                    },
+                });
+            });
+        }""")
+        await page.locator('#finance-report').click()
+        await page.wait_for_function("typeof window.completeFinanceResponse === 'function'")
+        await page.locator('#logout').click()
+        await page.evaluate("window.completeFinanceResponse()")
+        await page.wait_for_function("window.financeResponseRead === true")
+        await page.evaluate("() => new Promise(requestAnimationFrame)")
+        await expect(page.locator('#status')).to_have_text('已退出')
+        await expect(page.locator('#result')).to_have_text('')
         assert not errors, errors
         print(json.dumps({'inventory': True, 'approved_and_received': True, 'alerts': True,
-                          'report_history': True, 'finance_reconciliation': True, 'audit': True, 'latency_ms': latencies, 'errors': errors}))
+                          'report_history': True, 'finance_reconciliation': True, 'logout_discards_finance_response': True, 'audit': True, 'latency_ms': latencies, 'errors': errors}))
         await browser.close()
 
 

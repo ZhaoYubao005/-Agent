@@ -1,7 +1,9 @@
 """Administrator-only independent payment and revenue reconciliation."""
 import asyncio
+import os
 from datetime import date, datetime, time, timedelta, timezone
 from hashlib import sha256
+from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -10,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ecomops.audit import record
 from ecomops.auth import Actor, administrator
-from ecomops.database import transaction
+from ecomops.database import connect_read_only, transaction
 from ecomops.finance import (
     MAX_CSV_BYTES,
     MAX_CSV_ROWS,
@@ -38,37 +40,40 @@ def utc_key(moment):
     return moment.astimezone(timezone.utc).isoformat(timespec='microseconds')
 
 
+def source_id(row):
+    return row.event_id if isinstance(row, BankSettlement) else row.entry_id
+
+
+def same_source_record(row, payload):
+    return type(row).model_validate_json(payload) == row
+
+
 def persist_import(kind, rows, digest, actor):
     created = 0
     imported_at = utc_key(datetime.now(timezone.utc))
     # Lock the same key order across concurrent files with overlapping records.
-    source_rows = sorted(
-        ((row.event_id, utc_key(row.posted_at), row) if kind == 'bank'
-         else (row.entry_id, row.date.isoformat(), row) for row in rows),
-        key=lambda item: item[0],
-    )
     with transaction() as db:
-        for source_id, effective_at, row in source_rows:
+        for row in sorted(rows, key=source_id):
+            row_id = source_id(row)
+            effective_at = utc_key(row.posted_at) if kind == 'bank' else row.date.isoformat()
             inserted = db.execute("""
                 INSERT INTO finance_records (kind, source_id, effective_at, payload, source_digest, imported_at)
                 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(kind, source_id) DO NOTHING
-            """, (kind, source_id, effective_at, row.model_dump_json(), digest, imported_at)).rowcount
+            """, (kind, row_id, effective_at, row.model_dump_json(), digest, imported_at)).rowcount
             if inserted:
                 created += 1
                 continue
             existing = db.execute(
-                'SELECT payload FROM finance_records WHERE kind=? AND source_id=?', (kind, source_id),
+                'SELECT payload FROM finance_records WHERE kind=? AND source_id=?', (kind, row_id),
             ).fetchone()
-            if type(row).model_validate_json(existing['payload']) != row:
+            if not same_source_record(row, existing['payload']):
                 raise SourceConflict
         if created:
             record(db, actor, 'finance_import', kind, f'SHA-256 {digest} and {created} new records')
     return created
 
 
-@router.post('/import/{kind}')
-async def import_finance(kind: Kind, request: Request, response: Response,
-                         actor: Actor = Depends(administrator)):
+async def read_csv_upload(kind: Kind, request: Request):
     if request.headers.get('content-type', '').split(';', 1)[0].strip().lower() != 'text/csv':
         raise HTTPException(415, 'Upload a UTF-8 CSV with Content-Type text/csv')
     content = bytearray()
@@ -77,17 +82,64 @@ async def import_finance(kind: Kind, request: Request, response: Response,
             raise HTTPException(413, 'The CSV exceeds the 1 MiB limit')
         content.extend(chunk)
     raw = bytes(content)
-    digest = sha256(raw).hexdigest()
     parser = parse_bank_csv if kind == 'bank' else parse_revenue_csv
     try:
         rows = await run_in_threadpool(parser, raw)
-        created = await run_in_threadpool(persist_import, kind, rows, digest, actor)
     except FinanceInputError as error:
         raise HTTPException(422, str(error)) from None
+    return rows, sha256(raw).hexdigest()
+
+
+@router.post('/import/{kind}')
+async def import_finance(kind: Kind, request: Request, response: Response,
+                         actor: Actor = Depends(administrator)):
+    rows, digest = await read_csv_upload(kind, request)
+    try:
+        created = await run_in_threadpool(persist_import, kind, rows, digest, actor)
     except SourceConflict:
         raise HTTPException(409, 'An existing source ID has different values. The entire import was rolled back.') from None
     response.headers['Cache-Control'] = 'no-store'
     return {'kind': kind, 'sha256': digest, 'imported_count': created, 'duplicate_count': len(rows) - created}
+
+
+def preview_counts(kind, rows):
+    if not rows:
+        return 0, 0, 0
+
+    try:
+        if not os.environ.get('ECOMOPS_DATABASE_URL'):
+            # A fresh SQLite installation has no records. Avoid creating its database here.
+            path = Path(os.environ.get('ECOMOPS_AUDIT_DB', '.runtime/audit.sqlite3'))
+            try:
+                path.stat()
+            except FileNotFoundError:
+                return len(rows), 0, 0
+
+        candidates = {source_id(row): row for row in rows}
+        placeholders = ','.join('?' for _ in candidates)
+        with connect_read_only() as db:
+            existing = db.execute(f"""
+                SELECT source_id, payload FROM finance_records
+                WHERE kind=? AND source_id IN ({placeholders})
+            """, (kind, *candidates)).fetchall()
+        duplicates = sum(same_source_record(candidates[item['source_id']], item['payload']) for item in existing)
+    except Exception:
+        # Database and stored payload errors can contain connection or finance details.
+        raise HTTPException(503, 'Finance records unavailable for preview') from None
+
+    return len(rows) - len(existing), duplicates, len(existing) - duplicates
+
+
+@router.post('/preview/{kind}', dependencies=[Depends(administrator)])
+async def preview_finance(kind: Kind, request: Request, response: Response):
+    rows, digest = await read_csv_upload(kind, request)
+    new, duplicates, conflicts = await run_in_threadpool(preview_counts, kind, rows)
+    response.headers['Cache-Control'] = 'no-store'
+    return {
+        'kind': kind, 'sha256': digest, 'record_count': len(rows),
+        'new_count': new, 'duplicate_count': duplicates, 'conflict_count': conflicts,
+        'ready_to_import': conflicts == 0,
+    }
 
 
 def read_period(start, end, day, as_of):

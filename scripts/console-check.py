@@ -48,6 +48,15 @@ async def main():
         await page.locator('#zone').fill('UTC')
         finance = await operation('finance-report', '/operations/finance/reconciliation')
         assert finance['scope'] == 'imported_records_only'
+        today = datetime.now(timezone.utc).date().isoformat()
+        await page.locator('#revenue-csv').set_input_files({
+            'name': 'preview-fixture.csv', 'mimeType': 'text/csv',
+            'buffer': f'entry_id,date,currency,amount\npreview_only,{today},EUR,123.45\n'.encode(),
+        })
+        preview = await operation('preview-revenue', '/operations/finance/preview/revenue')
+        assert preview['new_count'] == 1 and preview['ready_to_import'] is True
+        after_preview = await operation('finance-report', '/operations/finance/reconciliation')
+        assert after_preview['recognized_revenue'] == finance['recognized_revenue']
         audit = await operation('audit', '/operations/audit')
         assert {'approved', 'applied'} <= {row['action'] for row in audit if row['subject'] == bag['id']}
         # Delay a financial response until after logout to exercise the display boundary.
@@ -72,7 +81,7 @@ async def main():
         await expect(page.locator('#result')).to_have_text('')
         assert not errors, errors
         print(json.dumps({'inventory': True, 'approved_and_received': True, 'alerts': True,
-                          'report_history': True, 'finance_reconciliation': True, 'logout_discards_finance_response': True, 'audit': True, 'latency_ms': latencies, 'errors': errors}))
+                          'report_history': True, 'finance_reconciliation': True, 'finance_preview': True, 'logout_discards_finance_response': True, 'audit': True, 'latency_ms': latencies, 'errors': errors}))
         await browser.close()
 
 

@@ -61,9 +61,9 @@ pre { overflow: auto; background: #eef2f7; padding: 1rem; }
 <section>
 <h2>财务对账（管理员）</h2>
 <label>清算流水 CSV <input id="bank-csv" type="file" accept=".csv,text/csv"></label>
-<button id="import-bank">导入清算流水</button>
+<button id="preview-bank">预检清算流水</button><button id="import-bank">导入清算流水</button>
 <label>财务收入 CSV <input id="revenue-csv" type="file" accept=".csv,text/csv"></label>
-<button id="import-revenue">导入确认收入</button>
+<button id="preview-revenue">预检确认收入</button><button id="import-revenue">导入确认收入</button>
 <button id="finance-report">对账（使用日报日期与时区）</button>
 </section>
 <section>
@@ -181,7 +181,7 @@ byId('export').onclick = async () => {
     if (generation === requestGeneration) byId('status').textContent = '导出失败，请核对日期、时区和身份';
   }
 };
-const importFinance = kind => {
+const submitFinance = (kind, action) => {
   const input = byId(kind + '-csv');
   const file = input.files[0];
   if (!file) {
@@ -192,10 +192,12 @@ const importFinance = kind => {
     byId('status').textContent = 'CSV 不能超过 1 MiB';
     return;
   }
-  return request('/operations/finance/import/' + kind, 'POST', file, 'text/csv');
+  return request('/operations/finance/' + action + '/' + kind, 'POST', file, 'text/csv');
 };
-byId('import-bank').onclick = () => importFinance('bank');
-byId('import-revenue').onclick = () => importFinance('revenue');
+byId('preview-bank').onclick = () => submitFinance('bank', 'preview');
+byId('preview-revenue').onclick = () => submitFinance('revenue', 'preview');
+byId('import-bank').onclick = () => submitFinance('bank', 'import');
+byId('import-revenue').onclick = () => submitFinance('revenue', 'import');
 byId('finance-report').onclick = () => request('/operations/finance/reconciliation?' + query());
 byId('history').onclick = () => request('/operations/reports/history');
 byId('tasks').onclick = () => request('/operations/tasks');

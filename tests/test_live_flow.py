@@ -1,16 +1,20 @@
 """Requires running development services; touches ECOMOPS-* fixtures only."""
+import asyncio
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 import httpx
 import pytest
 from ecomops.medusa import Medusa
+from ecomops.receipts import validate_receipt_environment
 from ecomops.tools import commerce_tools, call
 
 
 @pytest.mark.asyncio
 async def test_real_api_mcp_langgraph_replenishment():
+    validate_receipt_environment()
     medusa = Medusa()
     products = await medusa.list_all('products', 'products')
     orders = await medusa.list_all('orders', 'orders')
@@ -34,7 +38,7 @@ async def test_real_api_mcp_langgraph_replenishment():
                              json={'stocked_quantity': stocked})
     async with commerce_tools() as session:
         names = [t.name for t in (await session.list_tools()).tools]
-        assert set(names) == {'list_products', 'list_orders', 'list_inventory', 'replenish_inventory'}
+        assert set(names) == {'list_products', 'list_orders', 'list_inventory', 'read_daily_report'}
         assert len(await call(session, 'list_products')) == len(products)
         assert len(await call(session, 'list_orders')) == len(orders)
         mcp_inventory = await call(session, 'list_inventory')
@@ -50,6 +54,8 @@ async def test_real_api_mcp_langgraph_replenishment():
         response = await agent.post('/inventory/check', json={}, headers=headers)
         assert response.status_code == 200, response.text
         before = response.json()
+        assert len(before['trace']['nodes']) == 2
+        assert before['trace']['total_ms'] > 0
         proposals = {p['sku']: p for p in before['recommendations']}
         assert set(proposals) == {'ECOMOPS-MUG', 'ECOMOPS-BOTTLE'}
         assert proposals['ECOMOPS-MUG']['quantity'] == 27
@@ -59,8 +65,31 @@ async def test_real_api_mcp_langgraph_replenishment():
         stale_proposal = next(p for p in extra.json()['recommendations'] if p['sku'] == 'ECOMOPS-MUG')
         receipts = []
         for proposal in proposals.values():
-            path = f'/recommendations/{proposal["id"]}/approve'
-            first = await agent.post(path, headers=headers)
+            base = f'/recommendations/{proposal["id"]}'
+            premature = await agent.post(f'{base}/receive', headers=headers)
+            assert premature.status_code == 409
+            approval = await agent.post(f'{base}/approve', headers=headers)
+            assert approval.status_code == 200, approval.text
+            assert approval.json()['status'] == 'approved'
+            assert approval.json()['receipt'] is None
+            path = f'{base}/receive'
+            if proposal['sku'] == 'ECOMOPS-BOTTLE':
+                batch = {'request_id': str(uuid4()), 'quantity': 12}
+                partial = await agent.post(path, json=batch, headers=headers)
+                assert partial.status_code == 200, partial.text
+                partial = partial.json()
+                assert partial['status'] == 'partially_received'
+                assert partial['receipt']['available_quantity'] == 12
+                assert partial['receipt']['remaining_quantity'] == 18
+                replay = await agent.post(path, json=batch, headers=headers)
+                assert replay.json() == partial
+                conflict = await agent.post(path, json={**batch, 'quantity': 13}, headers=headers)
+                assert conflict.status_code == 409
+            first, concurrent = await asyncio.gather(
+                agent.post(path, headers=headers), agent.post(path, headers=headers),
+            )
+            assert concurrent.status_code == 200, concurrent.text
+            assert concurrent.json() == first.json()
             assert first.status_code == 200, first.text
             applied = first.json()
             assert applied['status'] == 'applied'
@@ -74,7 +103,9 @@ async def test_real_api_mcp_langgraph_replenishment():
         after = after_response.json()
         assert after['recommendations'] == []
         # Another proposal based on the old inventory snapshot must not overwrite receipts.
-        stale = await agent.post(f'/recommendations/{stale_proposal["id"]}/approve', headers=headers)
+        stale_path = f'/recommendations/{stale_proposal["id"]}'
+        assert (await agent.post(f'{stale_path}/approve', headers=headers)).status_code == 200
+        stale = await agent.post(f'{stale_path}/receive', headers=headers)
         assert stale.status_code == 409
         stale_audit = await agent.get(f'/recommendations/{stale_proposal["id"]}', headers=headers)
         assert stale_audit.json()['status'] == 'needs_review'
@@ -97,7 +128,40 @@ async def test_real_api_mcp_langgraph_replenishment():
         'final_demo_inventory': [{'sku': i['sku'], 'levels': i['location_levels']} for i in final_demo],
         'assertions': ['real_admin_api_reads', 'real_mcp_handshake_and_tool_calls', 'reserved_stock_in_policy',
                        'unauthorized_rejected', 'invalid_policy_rejected', 'approved_receipt_readback',
-                       'duplicate_approval_idempotent', 'stale_snapshot_rejected', 'alerts_cleared'],
+                       'unapproved_receipt_rejected', 'concurrent_receipt_idempotent', 'partial_receipt_idempotent', 'stale_snapshot_rejected', 'alerts_cleared'],
     }
     destination = Path(__file__).resolve().parents[1] / 'docs/evidence/phase1-live.json'
     destination.write_text(json.dumps(evidence, indent=2))
+
+
+@pytest.mark.asyncio
+async def test_real_mcp_daily_report_and_history():
+    orders = await Medusa().list_all('orders', 'orders')
+    demo = [order for order in orders if (order.get('metadata') or {}).get('ecomops_demo')]
+    assert demo
+    day = datetime.fromisoformat(demo[0]['created_at']).astimezone(timezone.utc).date()
+    headers = {'Authorization': f'Bearer {os.environ["ECOMOPS_API_TOKEN"]}'}
+    async with httpx.AsyncClient(base_url='http://127.0.0.1:8100', timeout=90, trust_env=False) as agent:
+        params = {'day': day.isoformat(), 'zone': 'UTC'}
+        preview = await agent.get('/operations/reports/daily', params=params, headers=headers)
+        assert preview.status_code == 200, preview.text
+        assert preview.json()['current']['orders'] >= 1
+        assert len(preview.json()['trace']['nodes']) == 2
+        day = datetime.now(timezone.utc).date() - timedelta(days=1)
+        params['day'] = day.isoformat()
+        response = await agent.post('/operations/reports/daily', params=params, headers=headers)
+        assert response.status_code == 200, response.text
+        report = response.json()
+        assert report['current']['revenue'] is None
+        saved = await agent.get(f'/operations/reports/history/{day}', headers=headers)
+        assert saved.json() == report
+        exported = await agent.get(f'/operations/reports/history/{day}/export', headers=headers)
+        assert exported.status_code == 200
+        assert exported.headers['content-type'].startswith('text/csv')
+        assert 'current,orders,' in exported.text
+        assert 'current,payment_ledger.status,' in exported.text
+    if os.environ.get('ECOMOPS_MCP_REPORT_READ') == '1':
+        async with commerce_tools() as session:
+            aggregate = await call(session, 'read_daily_report', {'day': day.isoformat(), 'zone': 'UTC'})
+        assert aggregate['current'] == report['current']
+        assert 'alerts' not in aggregate
